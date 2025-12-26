@@ -310,7 +310,7 @@ impl Source {
             Address::Pluto(config) => {
                 #[cfg(not(feature = "pluto"))]
                 {
-                    error!("Compile jet1090 with the pluto feature, {:?} argument ignored", uri);
+                    error!("Compile jet1090 with the pluto feature, {:?} argument ignored", config);
                     std::process::exit(127);
                 }
                 #[cfg(feature = "pluto")]
@@ -332,7 +332,7 @@ impl Source {
             Address::Soapy(config) => {
                 #[cfg(not(feature = "soapy"))]
                 {
-                    error!("Compile jet1090 with the soapy feature, {:?} argument ignored", args);
+                    error!("Compile jet1090 with the soapy feature, {:?} argument ignored", config);
                     std::process::exit(127);
                 }
                 #[cfg(feature = "soapy")]

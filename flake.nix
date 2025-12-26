@@ -66,7 +66,7 @@
               openssl
               python3
               bzip2
-              soapysdr
+              # soapysdr
               protobuf
             ] ++ lib.optionals pkgs.stdenv.isLinux [
               lld
@@ -74,7 +74,7 @@
             ];
 
             buildInputs = with pkgs; [
-              soapysdr
+              # soapysdr
             ] ++ lib.optionals pkgs.stdenv.isDarwin [
               libiconv
             ];
@@ -102,7 +102,7 @@
 
             jet1090 = craneLib.buildPackage (commonArgs // {
               pname = "jet1090";
-              cargoExtraFlags = "--all-features -p jet1090";
+              cargoExtraFlags = "--features rtlsdr,ssh,sero -p jet1090";
               meta.mainProgram = "jet1090";
               inherit cargoArtifacts;
 
