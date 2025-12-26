@@ -12,13 +12,20 @@ installers = ["shell", "powershell", "homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "xoolive/homebrew-homebrew"
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
 # Which actions to run on pull requests
 pr-run-mode = "plan"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Whether to pass --all-features to cargo build
-all-features = true
+# all-features = true
+features = ["rtlsdr", "sero", "ssh"]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
@@ -28,13 +35,13 @@ install-updater = true
 github-build-setup = "../release_setup.yml"
 
 [dist.dependencies.apt]
-libsoapysdr-dev = "*"
+# libsoapysdr-dev = "*"
 # soapysdr-module-rtlsdr = "*"  # only for running
 protobuf-compiler = "*"
 
 [dist.dependencies.homebrew]
-soapysdr = { stage = ["build", "run"] }
-soapyrtlsdr = { stage = ["run"] }
+# soapysdr = { stage = ["build", "run"] }
+# soapyrtlsdr = { stage = ["run"] }
 protobuf = { stage = ["build"] }
 
 [dist.github-custom-runners]

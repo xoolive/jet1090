@@ -31,6 +31,7 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::source::beast;
 
+    #[cfg(feature = "sdr")]
     pub use crate::source::iqread;
 
     #[cfg(feature = "sero")]
