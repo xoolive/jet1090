@@ -382,13 +382,6 @@
                     // On first update, fit bounds immediately
                     map.fitBounds(bounds, { padding: AUTO_CENTER_PADDING });
                     firstUpdate = false;
-                } else {
-                    // On subsequent updates, animate the fit
-                    map.fitBounds(bounds, {
-                        padding: AUTO_CENTER_PADDING,
-                        animate: true,
-                        duration: 0.5
-                    });
                 }
             }
 
