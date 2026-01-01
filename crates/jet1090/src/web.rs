@@ -6,7 +6,7 @@ use std::sync::Arc;
 use warp::http::StatusCode;
 use warp::reject::Rejection;
 use warp::reply::Reply;
-use warp::Filter;
+use warp::{fs, Filter};
 
 use crate::snapshot::Snapshot;
 use crate::SharedState;
@@ -111,6 +111,7 @@ pub async fn handle_rejection(
     if err.is_not_found() {
         code = StatusCode::NOT_FOUND;
         message = "Route not found, try one of /,\n\
+            /map/,\n\
             /all,\n\
             /icao24,\n\
             /track?icao24={icao24},\n\
@@ -142,6 +143,7 @@ pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
             "Welcome to the jet1090 REST API!<br>\
             Try one of the following routes:<br>\
             <ul>\
+            <li><a href=\"/map/\">Live Aircraft Map</a>: interactive map showing all aircraft</li>\
             <li><a href=\"/all\">/all</a>: returns all current state vectors</li>\
             <li><a href=\"/icao24\">/icao24</a>: returns all ICAO 24-bit addresses seen</li>\
             <li>/track?icao24={icao24}&since={timestamp}: returns the trajectory of a given aircraft since the given timestamp (optional)</li>\
@@ -183,13 +185,16 @@ pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
         .and(warp::query::<Query>())
         .and_then(|query: Query| async move { airports(query).await });
 
+    // Serve static files from the static directory
+    let static_files = warp::path("map").and(fs::dir("static"));
+
     let cors = warp::cors()
         .allow_any_origin()
         .allow_headers(vec!["*"])
         .allow_methods(vec!["GET"]);
 
     let routes = warp::get()
-        .and(home.or(icao24).or(all).or(track).or(sensors).or(airports))
+        .and(static_files.or(home).or(icao24).or(all).or(track).or(sensors).or(airports))
         .recover(handle_rejection)
         .with(cors);
 
