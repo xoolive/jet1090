@@ -174,6 +174,8 @@
         const aircraftMarkers = new Map();
         let updateCounter = 0;
         let firstUpdate = true;
+        let currentTrackLine = null;  // Store current track polyline
+        let currentTrackedAircraft = null;  // ICAO24 of aircraft being tracked
 
         // Create airplane icon with rotation
         function airplaneIcon(rotation) {
@@ -201,6 +203,57 @@
             if (elapsed < 60) return `${elapsed}s ago`;
             if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ago`;
             return `${Math.floor(elapsed / 3600)}h ago`;
+        }
+
+        // Fetch and display aircraft track
+        async function showAircraftTrack(icao24) {
+            // If switching to a different aircraft, clear the old track line
+            if (currentTrackedAircraft !== icao24 && currentTrackLine) {
+                currentTrackLine.remove();
+                currentTrackLine = null;
+            }
+            // Set this as the currently tracked aircraft
+            currentTrackedAircraft = icao24;
+            await updateTrackLine(icao24);
+        }
+
+        // Update the track line for the given aircraft
+        async function updateTrackLine(icao24) {
+            try {
+                // Fetch track data - extract base URL from ENDPOINT_URL
+                const baseUrl = ENDPOINT_URL.substring(0, ENDPOINT_URL.lastIndexOf('/'));
+                const response = await fetch(`${baseUrl}/track?icao24=${icao24}`);
+                if (!response.ok) return;
+
+                const trackData = await response.json();
+                if (!trackData || trackData.length === 0) return;
+
+                // Extract positions from track data
+                const positions = [];
+                trackData.forEach(point => {
+                    // Look for decoded latitude/longitude in the point
+                    if (point.latitude != null && point.longitude != null) {
+                        positions.push([point.latitude, point.longitude]);
+                    }
+                });
+
+                // Update or create track line if we have positions
+                if (positions.length > 1) {
+                    if (currentTrackLine) {
+                        // Update existing line's positions
+                        currentTrackLine.setLatLngs(positions);
+                    } else {
+                        // Create new track line
+                        currentTrackLine = L.polyline(positions, {
+                            color: '#4A4A4A',
+                            weight: 3,
+                            opacity: 0.7
+                        }).addTo(map);
+                    }
+                }
+            } catch (error) {
+                console.error('Error fetching track:', error);
+            }
         }
 
         // Create popup content
@@ -296,6 +349,7 @@
                         title: aircraft.callsign || aircraft.icao24
                     })
                     .bindPopup(createPopupContent(aircraft))
+                    .on('click', () => showAircraftTrack(aircraft.icao24))
                     .addTo(map);
 
                     aircraftMarkers.set(aircraft.icao24, marker);
@@ -307,8 +361,21 @@
                 if (!currentIcaos.has(icao24)) {
                     marker.remove();
                     aircraftMarkers.delete(icao24);
+                    // Clear track if this was the tracked aircraft
+                    if (currentTrackedAircraft === icao24) {
+                        if (currentTrackLine) {
+                            currentTrackLine.remove();
+                            currentTrackLine = null;
+                        }
+                        currentTrackedAircraft = null;
+                    }
                 }
             });
+
+            // Update track line for currently tracked aircraft
+            if (currentTrackedAircraft && currentIcaos.has(currentTrackedAircraft)) {
+                updateTrackLine(currentTrackedAircraft);
+            }
 
             // Auto-center map on aircraft
             if (AUTO_CENTER_ENABLED && bounds.length > 0) {
@@ -335,10 +402,11 @@
                 }
 
                 const aircraft = await response.json();
-                updateAircraft(aircraft);
+
                 // Filter out aircraft not seen in the last 30 seconds
                 const now = Math.floor(Date.now() / 1000);
                 const filteredAircraft = aircraft.filter(ac => (now - ac.lastseen) < 30);
+
                 updateAircraft(filteredAircraft); 
 
                 // Update status to connected
