@@ -6,7 +6,7 @@ use std::sync::Arc;
 use warp::http::StatusCode;
 use warp::reject::Rejection;
 use warp::reply::Reply;
-use warp::{fs, Filter};
+use warp::Filter;
 
 use crate::snapshot::Snapshot;
 use crate::SharedState;
@@ -143,12 +143,12 @@ pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
             "Welcome to the jet1090 REST API!<br>\
             Try one of the following routes:<br>\
             <ul>\
-            <li><a href=\"/map\">Live Aircraft Map</a>: interactive map showing all aircraft</li>\
             <li><a href=\"/all\">/all</a>: returns all current state vectors</li>\
             <li><a href=\"/icao24\">/icao24</a>: returns all ICAO 24-bit addresses seen</li>\
             <li>/track?icao24={icao24}&since={timestamp}: returns the trajectory of a given aircraft since the given timestamp (optional)</li>\
             <li><a href=\"/sensors\">/sensors</a>: returns information about all sensors</li>\
             <li>/airports?q={string}: returns a list of potential airports matching the query string</li>\
+            <li><a href=\"/map\">/map</a>: interactive map showing all aircraft</li>\
             </ul>",
         ))
     });
@@ -185,9 +185,8 @@ pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
         .and(warp::query::<Query>())
         .and_then(|query: Query| async move { airports(query).await });
 
-    // Serve static files from the static directory
     let map = warp::path("map").and_then(|| async {
-        Ok::<_, Infallible>(warp::reply::html(include_str!("static/app.html"))
+        Ok::<_, Infallible>(warp::reply::html(include_str!("static/app.html")))
     });
 
     let cors = warp::cors()
@@ -196,7 +195,14 @@ pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
         .allow_methods(vec!["GET"]);
 
     let routes = warp::get()
-        .and(home.or(map).or(icao24).or(all).or(track).or(sensors).or(airports))
+        .and(
+            home.or(icao24)
+                .or(all)
+                .or(track)
+                .or(sensors)
+                .or(airports)
+                .or(map),
+        )
         .recover(handle_rejection)
         .with(cors);
 
