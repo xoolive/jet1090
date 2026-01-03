@@ -186,7 +186,7 @@ pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
         .and_then(|query: Query| async move { airports(query).await });
 
     let map = warp::path("map").and_then(|| async {
-        Ok::<_, Infallible>(warp::reply::html(include_str!("static/app.html")))
+        Ok::<_, Infallible>(warp::reply::html(include_str!("../static/app.html")))
     });
 
     let cors = warp::cors()
