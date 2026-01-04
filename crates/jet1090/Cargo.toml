@@ -18,7 +18,7 @@ ssh = ['rs1090/ssh']
 [dependencies]
 chrono = "0.4.42"
 clap = { version = "4.5.54", features = ["color", "derive", "wrap_help", "env"] }
-clap_complete = "4.5.62"
+clap_complete = "4.5.64"
 clap_complete_nushell = "4.5.10"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 deku = "0.20.2"
