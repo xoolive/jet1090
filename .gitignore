@@ -7,3 +7,8 @@ result
 /samples
 # agent plan must remain private
 /plan.md
+# Local development symlink to desperado
+/desperado
+# Temporary status and planning files
+/pr_*.md
+/rebase_summary.md
