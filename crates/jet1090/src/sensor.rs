@@ -34,7 +34,9 @@ pub async fn sensors(value: &Source) -> Vec<Sensor> {
         Address::Tcp(_)
         | Address::Udp(_)
         | Address::Websocket(_)
-        | Address::Rtlsdr(_) => {
+        | Address::Rtlsdr(_)
+        | Address::Pluto(_)
+        | Address::Soapy(_) => {
             vec![Sensor {
                 serial: value.serial(),
                 name: value.name.clone(),

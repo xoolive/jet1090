@@ -115,11 +115,6 @@ struct Options {
     /// More details are available at: <https://mode-s.org/jet1090/sources>
     sources: Vec<source::Source>,
 
-    #[cfg(feature = "rtlsdr")]
-    /// List the detected devices, for now, only --discover rtlsdr is fully supported
-    #[arg(long, value_name = "ARGS")]
-    discover: Option<String>,
-
     /// logging file, use "-" for stdout (only in non-interactive mode)
     #[arg(short, long, value_name = "FILE")]
     log_file: Option<String>,
@@ -261,12 +256,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             subscriber.init(); // no logging
         }
-    }
-
-    #[cfg(feature = "rtlsdr")]
-    if let Some(args) = cli_options.discover {
-        rtlsdr::enumerate(&args.to_string());
-        return Ok(());
     }
 
     if options.sources.is_empty() {
