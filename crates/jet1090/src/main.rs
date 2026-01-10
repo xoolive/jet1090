@@ -15,6 +15,7 @@ use crate::web::serve_web_api;
 use clap::{Command, CommandFactory, Parser, ValueHint};
 use clap_complete::{generate, Generator};
 use crossterm::event::KeyCode;
+use desperado::expanduser;
 use ratatui::widgets::*;
 use redis::AsyncCommands;
 use rs1090::data::aircraft;
@@ -126,17 +127,6 @@ struct Options {
     /// Redis topic for the messages, default to "jet1090"
     #[arg(long, value_name = "REDIS TOPIC")]
     redis_topic: Option<String>,
-}
-
-fn expanduser(path: PathBuf) -> PathBuf {
-    // Check if the path starts with "~"
-    if let Some(stripped) = path.to_str().and_then(|p| p.strip_prefix("~")) {
-        if let Some(home_dir) = dirs::home_dir() {
-            // Join the home directory with the rest of the path
-            return home_dir.join(stripped.trim_start_matches('/'));
-        }
-    }
-    path
 }
 
 #[tokio::main]
