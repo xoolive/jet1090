@@ -123,10 +123,6 @@ pluto = "usb:1"
 airport = "EHAM"
 ```
 
-!!! note "Backward compatibility"
-
-    The command-line also supports legacy schemes `plutoip://` and `plutousb://` which are automatically converted to `pluto://ip:` and `pluto://usb:` respectively.
-
 ### SoapySDR
 
 SoapySDR devices can be configured with driver arguments:

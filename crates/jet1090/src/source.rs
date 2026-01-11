@@ -200,43 +200,17 @@ impl FromStr for Source {
                 })
             }
             #[cfg(feature = "pluto")]
-            "pluto" | "plutoip" | "plutousb" => {
-                // Accept pluto://192.168.2.1 or plutoip://192.168.2.1 or plutousb://
-                // Convert to unified format for TOML storage
-                let uri = match url.scheme() {
-                    "plutoip" => {
-                        // plutoip://192.168.2.1 -> ip:192.168.2.1
-                        let host = url
-                            .host_str()
-                            .ok_or("plutoip:// requires an IP address")?;
-                        format!("ip:{}", host)
-                    }
-                    "plutousb" => {
-                        // plutousb:// or plutousb://1 -> usb: or usb:1
-                        let host = url.host_str().unwrap_or("");
-                        if host.is_empty() {
-                            "usb:".to_string()
-                        } else {
-                            format!("usb:{}", host)
-                        }
-                    }
-                    "pluto" => {
-                        // pluto://192.168.2.1 -> just the IP
-                        // pluto://ip:192.168.2.1 -> ip:192.168.2.1
-                        // pluto://usb:1 -> usb:1
-                        let host = url.host_str().unwrap_or("");
-                        if host.starts_with("ip:") || host.starts_with("usb:") {
-                            host.to_string()
-                        } else if !host.is_empty() {
-                            // Plain IP address, assume ip: prefix
-                            host.to_string()
-                        } else {
-                            return Err("pluto:// requires a URI (IP address or usb:device)".to_string());
-                        }
-                    }
-                    _ => unreachable!(),
-                };
-                Address::Pluto(PlutoPath { pluto: uri })
+            "pluto" => {
+                // pluto://192.168.2.1 -> just the IP
+                // pluto://ip:192.168.2.1 -> ip:192.168.2.1
+                // pluto://usb:1 -> usb:1
+                let host = url.host_str().unwrap_or("");
+                if host.is_empty() {
+                    return Err("pluto:// requires a URI (IP address, ip:address, or usb:device)".to_string());
+                }
+                Address::Pluto(PlutoPath {
+                    pluto: host.to_string(),
+                })
             }
             #[cfg(feature = "soapy")]
             "soapy" => {
