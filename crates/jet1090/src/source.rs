@@ -83,6 +83,42 @@ pub enum WebsocketPath {
     Long(WebsocketStruct),
 }
 
+/// Helper struct for deserializing RTL-SDR configuration from TOML
+#[cfg(feature = "rtlsdr")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RtlSdrPath {
+    /// Serial number or device index (empty string for default device)
+    pub rtlsdr: String,
+}
+
+/// Helper struct for deserializing PlutoSDR IP configuration from TOML
+#[cfg(feature = "pluto")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PlutoIpPath {
+    /// IP address of the PlutoSDR device
+    pub plutoip: String,
+}
+
+/// Helper struct for deserializing PlutoSDR USB configuration from TOML
+#[cfg(feature = "pluto")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PlutoUsbPath {
+    /// USB device identifier (empty string for default)
+    pub plutousb: String,
+}
+
+/// Helper struct for deserializing SoapySDR configuration from TOML
+#[cfg(feature = "soapy")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SoapyPath {
+    /// SoapySDR driver arguments (e.g., "driver=rtlsdr")
+    pub soapy: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Address {
@@ -92,10 +128,18 @@ pub enum Address {
     Udp(String),
     /// Address to a websocket feed, e.g. `ws://localhost:9876/1234`
     Websocket(WebsocketPath),
-    /// An SDR device (RTL-SDR, PlutoSDR, or SoapySDR) configured via URL, e.g. `rtlsdr://?freq=1090M&rate=2.4M&gain=49.6`
-    #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
-    #[serde(skip)]
-    Sdr(desperado::DeviceConfig),
+    /// An RTL-SDR device, e.g. `rtlsdr://` or `rtlsdr://serial=00000001`
+    #[cfg(feature = "rtlsdr")]
+    Rtlsdr(RtlSdrPath),
+    /// A PlutoSDR device via IP, e.g. `plutoip://192.168.2.1`
+    #[cfg(feature = "pluto")]
+    Plutoip(PlutoIpPath),
+    /// A PlutoSDR device via USB, e.g. `plutousb://`
+    #[cfg(feature = "pluto")]
+    Plutousb(PlutoUsbPath),
+    /// A SoapySDR device, e.g. `soapy://driver=rtlsdr`
+    #[cfg(feature = "soapy")]
+    Soapy(SoapyPath),
     /// A token-based access to Sero Systems (require feature `sero`).
     Sero(SeroParams),
 }
@@ -163,74 +207,44 @@ impl FromStr for Source {
             "rtlsdr" => {
                 // Build URL with defaults for desperado
                 let host = url.host_str().unwrap_or("");
-                let device_url = if host.is_empty() {
-                    format!(
-                        "rtlsdr://?freq={}M&rate={}M&gain={}",
-                        (MODES_FREQ / 1e6) as u32,
-                        (RATE_2_4M / 1e6) as u32,
-                        RTLSDR_GAIN
-                    )
-                } else {
-                    // Legacy format with serial or other args - not supported in new format
-                    // Fall back to default device
-                    format!(
-                        "rtlsdr://?freq={}M&rate={}M&gain={}",
-                        (MODES_FREQ / 1e6) as u32,
-                        (RATE_2_4M / 1e6) as u32,
-                        RTLSDR_GAIN
-                    )
-                };
-
-                let config = desperado::DeviceConfig::from_str(&device_url)
-                    .map_err(|e| {
-                        format!("Failed to parse device config: {}", e)
-                    })?;
-                Address::Sdr(config)
+                Address::Rtlsdr(RtlSdrPath {
+                    rtlsdr: host.to_string(),
+                })
             }
             #[cfg(feature = "pluto")]
-            "pluto" | "plutoip" | "plutousb" => {
-                // pluto://192.168.2.1 -> plutoip://192.168.2.1?freq=1090M&rate=2.4M&gain=50
-                let device_url = match url.scheme() {
-                    "pluto" => {
-                        let host = url
-                            .host_str()
-                            .ok_or("pluto:// requires an IP address")?;
-                        format!(
-                            "plutoip://{}?freq={}M&rate={}M&gain=50",
-                            host,
-                            (MODES_FREQ / 1e6) as u32,
-                            (RATE_2_4M / 1e6) as u32
-                        )
-                    }
-                    "plutoip" | "plutousb" => {
-                        // Pass through plutoip and plutousb URLs
-                        url.as_str().to_string()
-                    }
-                    _ => unreachable!(),
-                };
-
-                let config = desperado::DeviceConfig::from_str(&device_url)
-                    .map_err(|e| {
-                        format!("Failed to parse device config: {}", e)
-                    })?;
-                Address::Sdr(config)
+            "pluto" => {
+                // pluto://192.168.2.1
+                let host =
+                    url.host_str().ok_or("pluto:// requires an IP address")?;
+                Address::Plutoip(PlutoIpPath {
+                    plutoip: host.to_string(),
+                })
+            }
+            #[cfg(feature = "pluto")]
+            "plutoip" => {
+                // plutoip://192.168.2.1
+                let host = url
+                    .host_str()
+                    .ok_or("plutoip:// requires an IP address")?;
+                Address::Plutoip(PlutoIpPath {
+                    plutoip: host.to_string(),
+                })
+            }
+            #[cfg(feature = "pluto")]
+            "plutousb" => {
+                // plutousb:// or plutousb://device
+                let host = url.host_str().unwrap_or("");
+                Address::Plutousb(PlutoUsbPath {
+                    plutousb: host.to_string(),
+                })
             }
             #[cfg(feature = "soapy")]
             "soapy" => {
-                // soapy://driver=rtlsdr -> soapy://driver=rtlsdr?freq=1090M&rate=2.4M&gain=49.6
+                // soapy://driver=rtlsdr
                 let args = url.host_str().unwrap_or("");
-                let device_url = format!(
-                    "soapy://{}?freq={}M&rate={}M&gain=49.6",
-                    args,
-                    (MODES_FREQ / 1e6) as u32,
-                    (RATE_2_4M / 1e6) as u32
-                );
-
-                let config = desperado::DeviceConfig::from_str(&device_url)
-                    .map_err(|e| {
-                        format!("Failed to parse device config: {}", e)
-                    })?;
-                Address::Sdr(config)
+                Address::Soapy(SoapyPath {
+                    soapy: args.to_string(),
+                })
             }
             "ws" => Address::Websocket(WebsocketPath::Short(format!(
                 "ws://{}:{}/{}",
@@ -280,28 +294,21 @@ impl Source {
                 };
                 build_serial(&name)
             }
-            #[cfg(any(
-                feature = "rtlsdr",
-                feature = "pluto",
-                feature = "soapy"
-            ))]
-            Address::Sdr(config) => {
-                // Generate a serial based on the device config
-                let name = match config {
-                    #[cfg(feature = "rtlsdr")]
-                    desperado::DeviceConfig::RtlSdr(cfg) => {
-                        format!("rtlsdr:{}", cfg.center_freq)
-                    }
-                    #[cfg(feature = "pluto")]
-                    desperado::DeviceConfig::Pluto(cfg) => {
-                        format!("pluto:{}", cfg.uri)
-                    }
-                    #[cfg(feature = "soapy")]
-                    desperado::DeviceConfig::Soapy(cfg) => {
-                        format!("soapy:{}", cfg.args)
-                    }
-                };
-                build_serial(&name)
+            #[cfg(feature = "rtlsdr")]
+            Address::Rtlsdr(rtlsdr_path) => {
+                build_serial(&format!("rtlsdr:{}", rtlsdr_path.rtlsdr))
+            }
+            #[cfg(feature = "pluto")]
+            Address::Plutoip(pluto_path) => {
+                build_serial(&format!("plutoip:{}", pluto_path.plutoip))
+            }
+            #[cfg(feature = "pluto")]
+            Address::Plutousb(pluto_path) => {
+                build_serial(&format!("plutousb:{}", pluto_path.plutousb))
+            }
+            #[cfg(feature = "soapy")]
+            Address::Soapy(soapy_path) => {
+                build_serial(&format!("soapy:{}", soapy_path.soapy))
             }
             Address::Sero(_) => 0,
         }
@@ -320,39 +327,99 @@ impl Source {
         name: Option<String>,
     ) {
         match &self.address {
-            #[cfg(any(
-                feature = "rtlsdr",
-                feature = "pluto",
-                feature = "soapy"
-            ))]
-            Address::Sdr(config) => {
-                // Check which SDR feature is needed based on the config
-                #[cfg(not(any(
-                    feature = "rtlsdr",
-                    feature = "pluto",
-                    feature = "soapy"
-                )))]
-                {
-                    error!(
-                        "Compile jet1090 with rtlsdr, pluto, or soapy feature for SDR support"
-                    );
-                    std::process::exit(127);
-                }
+            #[cfg(feature = "rtlsdr")]
+            Address::Rtlsdr(rtlsdr_path) => {
+                let device_str = &rtlsdr_path.rtlsdr;
+                let device_url = if device_str.is_empty() {
+                    format!(
+                        "rtlsdr://?freq={}M&rate={}M&gain={}",
+                        (MODES_FREQ / 1e6) as u32,
+                        (RATE_2_4M / 1e6) as u32,
+                        RTLSDR_GAIN
+                    )
+                } else {
+                    format!(
+                        "rtlsdr://{}?freq={}M&rate={}M&gain={}",
+                        device_str,
+                        (MODES_FREQ / 1e6) as u32,
+                        (RATE_2_4M / 1e6) as u32,
+                        RTLSDR_GAIN
+                    )
+                };
 
-                #[cfg(any(
-                    feature = "rtlsdr",
-                    feature = "pluto",
-                    feature = "soapy"
-                ))]
-                {
-                    let config = config.clone();
-                    tokio::spawn(async move {
-                        let source = IqAsyncSource::from_device_config(&config)
-                            .await
-                            .expect("Failed to create SDR source");
-                        iqread::receiver(tx, source, serial, 2.4e6, name).await
-                    });
-                }
+                tokio::spawn(async move {
+                    let config = desperado::DeviceConfig::from_str(&device_url)
+                        .expect("Failed to parse RTL-SDR device config");
+                    let source = IqAsyncSource::from_device_config(&config)
+                        .await
+                        .expect("Failed to create RTL-SDR source");
+                    iqread::receiver(tx, source, serial, RATE_2_4M, name).await
+                });
+            }
+            #[cfg(feature = "pluto")]
+            Address::Plutoip(pluto_path) => {
+                let ip = pluto_path.plutoip.clone();
+                let device_url = format!(
+                    "plutoip://{}?freq={}M&rate={}M&gain=50",
+                    ip,
+                    (MODES_FREQ / 1e6) as u32,
+                    (RATE_2_4M / 1e6) as u32
+                );
+
+                tokio::spawn(async move {
+                    let config = desperado::DeviceConfig::from_str(&device_url)
+                        .expect("Failed to parse PlutoSDR IP device config");
+                    let source = IqAsyncSource::from_device_config(&config)
+                        .await
+                        .expect("Failed to create PlutoSDR source");
+                    iqread::receiver(tx, source, serial, RATE_2_4M, name).await
+                });
+            }
+            #[cfg(feature = "pluto")]
+            Address::Plutousb(pluto_path) => {
+                let usb = pluto_path.plutousb.clone();
+                let device_url = if usb.is_empty() {
+                    format!(
+                        "plutousb://?freq={}M&rate={}M&gain=50",
+                        (MODES_FREQ / 1e6) as u32,
+                        (RATE_2_4M / 1e6) as u32
+                    )
+                } else {
+                    format!(
+                        "plutousb://{}?freq={}M&rate={}M&gain=50",
+                        usb,
+                        (MODES_FREQ / 1e6) as u32,
+                        (RATE_2_4M / 1e6) as u32
+                    )
+                };
+
+                tokio::spawn(async move {
+                    let config = desperado::DeviceConfig::from_str(&device_url)
+                        .expect("Failed to parse PlutoSDR USB device config");
+                    let source = IqAsyncSource::from_device_config(&config)
+                        .await
+                        .expect("Failed to create PlutoSDR source");
+                    iqread::receiver(tx, source, serial, RATE_2_4M, name).await
+                });
+            }
+            #[cfg(feature = "soapy")]
+            Address::Soapy(soapy_path) => {
+                let args = soapy_path.soapy.clone();
+                let device_url = format!(
+                    "soapy://{}?freq={}M&rate={}M&gain=49.6",
+                    args,
+                    (MODES_FREQ / 1e6) as u32,
+                    (RATE_2_4M / 1e6) as u32
+                );
+
+                tokio::spawn(async move {
+                    let config = desperado::DeviceConfig::from_str(&device_url)
+                        .expect("Failed to parse SoapySDR device config");
+                    let source = IqAsyncSource::from_device_config(&config)
+                        .await
+                        .expect("Failed to create SoapySDR source");
+                    iqread::receiver(tx, source, serial, RATE_2_4M, name).await
+                });
             }
             Address::Sero(sero) => {
                 #[cfg(not(feature = "sero"))]
@@ -497,19 +564,13 @@ mod test {
             let source = Source::from_str("rtlsdr:");
             assert!(source.is_ok());
             if let Ok(Source { address, .. }) = source {
-                assert!(matches!(
-                    address,
-                    Address::Sdr(desperado::DeviceConfig::RtlSdr(_))
-                ));
+                assert!(matches!(address, Address::Rtlsdr(_)));
             }
 
             let source = Source::from_str("rtlsdr://serial=00000001");
             assert!(source.is_ok());
             if let Ok(Source { address, .. }) = source {
-                assert!(matches!(
-                    address,
-                    Address::Sdr(desperado::DeviceConfig::RtlSdr(_))
-                ));
+                assert!(matches!(address, Address::Rtlsdr(_)));
             }
 
             let source = Source::from_str("rtlsdr:@LFBO");
@@ -521,10 +582,7 @@ mod test {
                 ..
             }) = source
             {
-                assert!(matches!(
-                    address,
-                    Address::Sdr(desperado::DeviceConfig::RtlSdr(_))
-                ));
+                assert!(matches!(address, Address::Rtlsdr(_)));
                 assert_eq!(name, None);
                 assert_eq!(pos.latitude, 43.628101);
                 assert_eq!(pos.longitude, 1.367263);
@@ -582,5 +640,77 @@ mod test {
             assert_eq!(pos.latitude, 43.628101);
             assert_eq!(pos.longitude, 1.367263);
         }
+    }
+
+    #[test]
+    fn test_toml_deserialization() {
+        // Test RTL-SDR deserialization
+        #[cfg(feature = "rtlsdr")]
+        {
+            let toml = r#"
+                rtlsdr = "serial=00000001"
+                latitude = 43.5993189
+                longitude = 1.4362472
+            "#;
+            let source: Source =
+                toml::from_str(toml).expect("Failed to parse TOML");
+            assert!(matches!(source.address, Address::Rtlsdr(_)));
+            if let Address::Rtlsdr(path) = &source.address {
+                assert_eq!(path.rtlsdr, "serial=00000001");
+            }
+            assert_eq!(source.reference.unwrap().latitude, 43.5993189);
+            assert_eq!(source.reference.unwrap().longitude, 1.4362472);
+        }
+
+        // Test PlutoSDR IP deserialization
+        #[cfg(feature = "pluto")]
+        {
+            let toml = r#"
+                name = "my-pluto"
+                plutoip = "192.168.2.1"
+            "#;
+            let source: Source =
+                toml::from_str(toml).expect("Failed to parse TOML");
+            assert!(matches!(source.address, Address::Plutoip(_)));
+            if let Address::Plutoip(path) = &source.address {
+                assert_eq!(path.plutoip, "192.168.2.1");
+            }
+            assert_eq!(source.name, Some("my-pluto".to_string()));
+        }
+
+        // Test PlutoSDR USB deserialization
+        #[cfg(feature = "pluto")]
+        {
+            let toml = r#"
+                plutousb = ""
+            "#;
+            let source: Source =
+                toml::from_str(toml).expect("Failed to parse TOML");
+            assert!(matches!(source.address, Address::Plutousb(_)));
+        }
+
+        // Test SoapySDR deserialization
+        #[cfg(feature = "soapy")]
+        {
+            let toml = r#"
+                soapy = "driver=rtlsdr"
+            "#;
+            let source: Source =
+                toml::from_str(toml).expect("Failed to parse TOML");
+            assert!(matches!(source.address, Address::Soapy(_)));
+            if let Address::Soapy(path) = &source.address {
+                assert_eq!(path.soapy, "driver=rtlsdr");
+            }
+        }
+
+        // Test TCP deserialization (should work regardless of features)
+        let toml = r#"
+            tcp = "localhost:10003"
+            name = "local-beast"
+        "#;
+        let source: Source =
+            toml::from_str(toml).expect("Failed to parse TOML");
+        assert!(matches!(source.address, Address::Tcp(_)));
+        assert_eq!(source.name, Some("local-beast".to_string()));
     }
 }

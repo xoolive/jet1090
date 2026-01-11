@@ -41,8 +41,30 @@ pub async fn sensors(value: &Source) -> Vec<Sensor> {
                 last_timestamp: 0,
             }]
         }
-        #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
-        Address::Sdr(_) => {
+        #[cfg(feature = "rtlsdr")]
+        Address::Rtlsdr(_) => {
+            vec![Sensor {
+                serial: value.serial(),
+                name: value.name.clone(),
+                reference: value.reference,
+                altitude: value.altitude,
+                aircraft_count: 0,
+                last_timestamp: 0,
+            }]
+        }
+        #[cfg(feature = "pluto")]
+        Address::Plutoip(_) | Address::Plutousb(_) => {
+            vec![Sensor {
+                serial: value.serial(),
+                name: value.name.clone(),
+                reference: value.reference,
+                altitude: value.altitude,
+                aircraft_count: 0,
+                last_timestamp: 0,
+            }]
+        }
+        #[cfg(feature = "soapy")]
+        Address::Soapy(_) => {
             vec![Sensor {
                 serial: value.serial(),
                 name: value.name.clone(),

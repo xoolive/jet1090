@@ -70,7 +70,59 @@ rtlsdr = "serial=00000001"
 airport = "LFBO"
 ```
 
+For the default RTL-SDR device, use an empty string:
+
+```toml
+[[sources]]
+name = "rtl-sdr"
+rtlsdr = ""
+airport = "LFBO"
+```
+
 The `airport` parameter replaces the `latitude` and `longitude` parameter if they are not present.
+
+### PlutoSDR
+
+PlutoSDR devices can be configured via IP or USB connection:
+
+```toml
+[[sources]]
+name = "pluto-ip"
+plutoip = "192.168.2.1"
+latitude = 43.5993189
+longitude = 1.4362472
+altitude = 151.0
+```
+
+For USB-connected PlutoSDR:
+
+```toml
+[[sources]]
+name = "pluto-usb"
+plutousb = ""
+airport = "EHAM"
+```
+
+### SoapySDR
+
+SoapySDR devices can be configured with driver arguments:
+
+```toml
+[[sources]]
+name = "soapy-rtlsdr"
+soapy = "driver=rtlsdr"
+airport = "LFBO"
+```
+
+Or with other SoapySDR-compatible devices:
+
+```toml
+[[sources]]
+name = "soapy-hackrf"
+soapy = "driver=hackrf"
+latitude = 51.4706
+longitude = -0.4619
+```
 
 ### Beast format
 
