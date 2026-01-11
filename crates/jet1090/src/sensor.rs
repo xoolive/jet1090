@@ -53,7 +53,7 @@ pub async fn sensors(value: &Source) -> Vec<Sensor> {
             }]
         }
         #[cfg(feature = "pluto")]
-        Address::Plutoip(_) | Address::Plutousb(_) => {
+        Address::Pluto(_) => {
             vec![Sensor {
                 serial: value.serial(),
                 name: value.name.clone(),

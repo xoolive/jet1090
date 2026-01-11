@@ -83,25 +83,49 @@ The `airport` parameter replaces the `latitude` and `longitude` parameter if the
 
 ### PlutoSDR
 
-PlutoSDR devices can be configured via IP or USB connection:
+PlutoSDR devices can be configured via IP or USB connection.
+
+For IP connection (most common):
 
 ```toml
 [[sources]]
-name = "pluto-ip"
-plutoip = "192.168.2.1"
+name = "pluto"
+pluto = "192.168.2.1"
 latitude = 43.5993189
 longitude = 1.4362472
 altitude = 151.0
+```
+
+You can also use the explicit `ip:` prefix:
+
+```toml
+[[sources]]
+name = "pluto"
+pluto = "ip:192.168.2.1"
+airport = "LFBO"
 ```
 
 For USB-connected PlutoSDR:
 
 ```toml
 [[sources]]
-name = "pluto-usb"
-plutousb = ""
+name = "pluto"
+pluto = "usb:"
 airport = "EHAM"
 ```
+
+Or with a specific USB device:
+
+```toml
+[[sources]]
+name = "pluto"
+pluto = "usb:1"
+airport = "EHAM"
+```
+
+!!! note "Backward compatibility"
+
+    The command-line also supports legacy schemes `plutoip://` and `plutousb://` which are automatically converted to `pluto://ip:` and `pluto://usb:` respectively.
 
 ### SoapySDR
 

@@ -92,22 +92,13 @@ pub struct RtlSdrPath {
     pub rtlsdr: String,
 }
 
-/// Helper struct for deserializing PlutoSDR IP configuration from TOML
+/// Helper struct for deserializing PlutoSDR configuration from TOML
 #[cfg(feature = "pluto")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct PlutoIpPath {
-    /// IP address of the PlutoSDR device
-    pub plutoip: String,
-}
-
-/// Helper struct for deserializing PlutoSDR USB configuration from TOML
-#[cfg(feature = "pluto")]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct PlutoUsbPath {
-    /// USB device identifier (empty string for default)
-    pub plutousb: String,
+pub struct PlutoPath {
+    /// PlutoSDR URI (IP address, USB device, or full URI like "ip:192.168.2.1" or "usb:1")
+    pub pluto: String,
 }
 
 /// Helper struct for deserializing SoapySDR configuration from TOML
@@ -131,12 +122,9 @@ pub enum Address {
     /// An RTL-SDR device, e.g. `rtlsdr://` or `rtlsdr://serial=00000001`
     #[cfg(feature = "rtlsdr")]
     Rtlsdr(RtlSdrPath),
-    /// A PlutoSDR device via IP, e.g. `plutoip://192.168.2.1`
+    /// A PlutoSDR device, e.g. `pluto://192.168.2.1` or `pluto://ip:192.168.2.1` or `pluto://usb:1`
     #[cfg(feature = "pluto")]
-    Plutoip(PlutoIpPath),
-    /// A PlutoSDR device via USB, e.g. `plutousb://`
-    #[cfg(feature = "pluto")]
-    Plutousb(PlutoUsbPath),
+    Pluto(PlutoPath),
     /// A SoapySDR device, e.g. `soapy://driver=rtlsdr`
     #[cfg(feature = "soapy")]
     Soapy(SoapyPath),
@@ -212,31 +200,43 @@ impl FromStr for Source {
                 })
             }
             #[cfg(feature = "pluto")]
-            "pluto" => {
-                // pluto://192.168.2.1
-                let host =
-                    url.host_str().ok_or("pluto:// requires an IP address")?;
-                Address::Plutoip(PlutoIpPath {
-                    plutoip: host.to_string(),
-                })
-            }
-            #[cfg(feature = "pluto")]
-            "plutoip" => {
-                // plutoip://192.168.2.1
-                let host = url
-                    .host_str()
-                    .ok_or("plutoip:// requires an IP address")?;
-                Address::Plutoip(PlutoIpPath {
-                    plutoip: host.to_string(),
-                })
-            }
-            #[cfg(feature = "pluto")]
-            "plutousb" => {
-                // plutousb:// or plutousb://device
-                let host = url.host_str().unwrap_or("");
-                Address::Plutousb(PlutoUsbPath {
-                    plutousb: host.to_string(),
-                })
+            "pluto" | "plutoip" | "plutousb" => {
+                // Accept pluto://192.168.2.1 or plutoip://192.168.2.1 or plutousb://
+                // Convert to unified format for TOML storage
+                let uri = match url.scheme() {
+                    "plutoip" => {
+                        // plutoip://192.168.2.1 -> ip:192.168.2.1
+                        let host = url
+                            .host_str()
+                            .ok_or("plutoip:// requires an IP address")?;
+                        format!("ip:{}", host)
+                    }
+                    "plutousb" => {
+                        // plutousb:// or plutousb://1 -> usb: or usb:1
+                        let host = url.host_str().unwrap_or("");
+                        if host.is_empty() {
+                            "usb:".to_string()
+                        } else {
+                            format!("usb:{}", host)
+                        }
+                    }
+                    "pluto" => {
+                        // pluto://192.168.2.1 -> just the IP
+                        // pluto://ip:192.168.2.1 -> ip:192.168.2.1
+                        // pluto://usb:1 -> usb:1
+                        let host = url.host_str().unwrap_or("");
+                        if host.starts_with("ip:") || host.starts_with("usb:") {
+                            host.to_string()
+                        } else if !host.is_empty() {
+                            // Plain IP address, assume ip: prefix
+                            host.to_string()
+                        } else {
+                            return Err("pluto:// requires a URI (IP address or usb:device)".to_string());
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                Address::Pluto(PlutoPath { pluto: uri })
             }
             #[cfg(feature = "soapy")]
             "soapy" => {
@@ -299,12 +299,8 @@ impl Source {
                 build_serial(&format!("rtlsdr:{}", rtlsdr_path.rtlsdr))
             }
             #[cfg(feature = "pluto")]
-            Address::Plutoip(pluto_path) => {
-                build_serial(&format!("plutoip:{}", pluto_path.plutoip))
-            }
-            #[cfg(feature = "pluto")]
-            Address::Plutousb(pluto_path) => {
-                build_serial(&format!("plutousb:{}", pluto_path.plutousb))
+            Address::Pluto(pluto_path) => {
+                build_serial(&format!("pluto:{}", pluto_path.pluto))
             }
             #[cfg(feature = "soapy")]
             Address::Soapy(soapy_path) => {
@@ -357,45 +353,21 @@ impl Source {
                 });
             }
             #[cfg(feature = "pluto")]
-            Address::Plutoip(pluto_path) => {
-                let ip = pluto_path.plutoip.clone();
+            Address::Pluto(pluto_path) => {
+                let uri = pluto_path.pluto.clone();
+                // Build full pluto:// URL for desperado
+                // If uri already has ip: or usb: prefix, use it directly
+                // If it's just an IP address, it can be used as-is (desperado handles it)
                 let device_url = format!(
-                    "plutoip://{}?freq={}M&rate={}M&gain=50",
-                    ip,
+                    "pluto://{}?freq={}M&rate={}M&gain=50",
+                    uri,
                     (MODES_FREQ / 1e6) as u32,
                     (RATE_2_4M / 1e6) as u32
                 );
 
                 tokio::spawn(async move {
                     let config = desperado::DeviceConfig::from_str(&device_url)
-                        .expect("Failed to parse PlutoSDR IP device config");
-                    let source = IqAsyncSource::from_device_config(&config)
-                        .await
-                        .expect("Failed to create PlutoSDR source");
-                    iqread::receiver(tx, source, serial, RATE_2_4M, name).await
-                });
-            }
-            #[cfg(feature = "pluto")]
-            Address::Plutousb(pluto_path) => {
-                let usb = pluto_path.plutousb.clone();
-                let device_url = if usb.is_empty() {
-                    format!(
-                        "plutousb://?freq={}M&rate={}M&gain=50",
-                        (MODES_FREQ / 1e6) as u32,
-                        (RATE_2_4M / 1e6) as u32
-                    )
-                } else {
-                    format!(
-                        "plutousb://{}?freq={}M&rate={}M&gain=50",
-                        usb,
-                        (MODES_FREQ / 1e6) as u32,
-                        (RATE_2_4M / 1e6) as u32
-                    )
-                };
-
-                tokio::spawn(async move {
-                    let config = desperado::DeviceConfig::from_str(&device_url)
-                        .expect("Failed to parse PlutoSDR USB device config");
+                        .expect("Failed to parse PlutoSDR device config");
                     let source = IqAsyncSource::from_device_config(&config)
                         .await
                         .expect("Failed to create PlutoSDR source");
@@ -662,31 +634,43 @@ mod test {
             assert_eq!(source.reference.unwrap().longitude, 1.4362472);
         }
 
-        // Test PlutoSDR IP deserialization
+        // Test PlutoSDR deserialization
         #[cfg(feature = "pluto")]
         {
+            // Test IP address format
             let toml = r#"
                 name = "my-pluto"
-                plutoip = "192.168.2.1"
+                pluto = "192.168.2.1"
             "#;
             let source: Source =
                 toml::from_str(toml).expect("Failed to parse TOML");
-            assert!(matches!(source.address, Address::Plutoip(_)));
-            if let Address::Plutoip(path) = &source.address {
-                assert_eq!(path.plutoip, "192.168.2.1");
+            assert!(matches!(source.address, Address::Pluto(_)));
+            if let Address::Pluto(path) = &source.address {
+                assert_eq!(path.pluto, "192.168.2.1");
             }
             assert_eq!(source.name, Some("my-pluto".to_string()));
-        }
 
-        // Test PlutoSDR USB deserialization
-        #[cfg(feature = "pluto")]
-        {
+            // Test ip: prefix format
             let toml = r#"
-                plutousb = ""
+                pluto = "ip:192.168.2.1"
             "#;
             let source: Source =
                 toml::from_str(toml).expect("Failed to parse TOML");
-            assert!(matches!(source.address, Address::Plutousb(_)));
+            assert!(matches!(source.address, Address::Pluto(_)));
+            if let Address::Pluto(path) = &source.address {
+                assert_eq!(path.pluto, "ip:192.168.2.1");
+            }
+
+            // Test usb: format
+            let toml = r#"
+                pluto = "usb:"
+            "#;
+            let source: Source =
+                toml::from_str(toml).expect("Failed to parse TOML");
+            assert!(matches!(source.address, Address::Pluto(_)));
+            if let Address::Pluto(path) = &source.address {
+                assert_eq!(path.pluto, "usb:");
+            }
         }
 
         // Test SoapySDR deserialization
