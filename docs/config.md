@@ -114,14 +114,24 @@ pluto = "usb:"
 airport = "EHAM"
 ```
 
-Or with a specific USB device:
+Or with a specific USB device (for USB devices with version numbers like `usb:1.18.5`, use command-line format `pluto:///usb:1.18.5`):
 
 ```toml
 [[sources]]
 name = "pluto"
-pluto = "usb:1"
+pluto = "usb:1.18.5"
 airport = "EHAM"
 ```
+
+!!! tip "Command-line USB device format"
+
+    When specifying USB devices from the command line, use triple slashes for URIs containing colons:
+    
+    ```bash
+    jet1090 pluto:///usb:1.18.5
+    ```
+    
+    In TOML configuration files, you can use the URI directly without the triple slashes.
 
 ### SoapySDR
 

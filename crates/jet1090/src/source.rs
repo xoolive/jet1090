@@ -203,14 +203,20 @@ impl FromStr for Source {
             "pluto" => {
                 // pluto://192.168.2.1 -> just the IP
                 // pluto://ip:192.168.2.1 -> ip:192.168.2.1
-                // pluto://usb:1 -> usb:1
-                let host = url.host_str().unwrap_or("");
-                if host.is_empty() {
-                    return Err("pluto:// requires a URI (IP address, ip:address, or usb:device)".to_string());
-                }
-                Address::Pluto(PlutoPath {
-                    pluto: host.to_string(),
-                })
+                // pluto:///usb:1.18.5 -> usb:1.18.5 (triple slash for URIs with colons)
+                let uri = match url.host_str() {
+                    Some(host) if !host.is_empty() => host.to_string(),
+                    _ => {
+                        // No host, try path component (for pluto:///usb:1.18.5)
+                        let path = url.path();
+                        if path.starts_with('/') && path.len() > 1 {
+                            path[1..].to_string()
+                        } else {
+                            return Err("pluto:// requires a URI (IP address, ip:address, or usb:device). Use pluto:///usb:1.18.5 for USB devices with version numbers.".to_string());
+                        }
+                    }
+                };
+                Address::Pluto(PlutoPath { pluto: uri })
             }
             #[cfg(feature = "soapy")]
             "soapy" => {
@@ -532,6 +538,49 @@ mod test {
                 assert_eq!(name, None);
                 assert_eq!(pos.latitude, 43.628101);
                 assert_eq!(pos.longitude, 1.367263);
+            }
+        }
+
+        #[cfg(feature = "pluto")]
+        {
+            // Test PlutoSDR with IP address
+            let source = Source::from_str("pluto://192.168.2.1");
+            assert!(source.is_ok());
+            if let Ok(Source { address, .. }) = source {
+                if let Address::Pluto(path) = address {
+                    assert_eq!(path.pluto, "192.168.2.1");
+                }
+            }
+
+            // Test PlutoSDR with explicit ip: prefix (use triple slash for URIs with colons)
+            let source = Source::from_str("pluto:///ip:192.168.2.1");
+            assert!(
+                source.is_ok(),
+                "Failed to parse pluto:///ip:192.168.2.1: {:?}",
+                source.err()
+            );
+            if let Ok(Source { address, .. }) = source {
+                if let Address::Pluto(path) = address {
+                    assert_eq!(path.pluto, "ip:192.168.2.1");
+                }
+            }
+
+            // Test PlutoSDR with USB using triple slash (for URIs with colons)
+            let source = Source::from_str("pluto:///usb:1.18.5");
+            assert!(source.is_ok());
+            if let Ok(Source { address, .. }) = source {
+                if let Address::Pluto(path) = address {
+                    assert_eq!(path.pluto, "usb:1.18.5");
+                }
+            }
+
+            // Test PlutoSDR with simple USB
+            let source = Source::from_str("pluto:///usb:");
+            assert!(source.is_ok());
+            if let Ok(Source { address, .. }) = source {
+                if let Address::Pluto(path) = address {
+                    assert_eq!(path.pluto, "usb:");
+                }
             }
         }
 
