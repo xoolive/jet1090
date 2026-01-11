@@ -31,10 +31,18 @@ pub struct Sensor {
  */
 pub async fn sensors(value: &Source) -> Vec<Sensor> {
     match &value.address {
-        Address::Tcp(_)
-        | Address::Udp(_)
-        | Address::Websocket(_)
-        | Address::Sdr(_) => {
+        Address::Tcp(_) | Address::Udp(_) | Address::Websocket(_) => {
+            vec![Sensor {
+                serial: value.serial(),
+                name: value.name.clone(),
+                reference: value.reference,
+                altitude: value.altitude,
+                aircraft_count: 0,
+                last_timestamp: 0,
+            }]
+        }
+        #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+        Address::Sdr(_) => {
             vec![Sensor {
                 serial: value.serial(),
                 name: value.name.clone(),
