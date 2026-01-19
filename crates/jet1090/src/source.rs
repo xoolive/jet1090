@@ -13,6 +13,14 @@ use rs1090::source::ssh::{TunnelledTcp, TunnelledWebsocket};
 
 #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
 use desperado::IqAsyncSource;
+#[cfg(feature = "pluto")]
+use desperado::pluto::PlutoConfig;
+#[cfg(feature = "rtlsdr")]
+use desperado::rtlsdr::{DeviceSelector, RtlSdrConfig};
+#[cfg(feature = "soapy")]
+use desperado::soapy::SoapyConfig;
+#[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+use desperado::{DeviceConfig, Gain};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 use tracing::error;
@@ -83,13 +91,31 @@ pub enum WebsocketPath {
     Long(WebsocketStruct),
 }
 
-/// Helper struct for deserializing RTL-SDR configuration from TOML
+/// Structured RTL-SDR device configuration for TOML
 #[cfg(feature = "rtlsdr")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RtlSdrPath {
-    /// Serial number or device index (empty string for default device)
-    pub rtlsdr: String,
+    #[serde(flatten)]
+    pub config: RtlSdrDeviceConfig,
+}
+
+/// RTL-SDR device configuration fields
+#[cfg(feature = "rtlsdr")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RtlSdrDeviceConfig {
+    /// Device index (0, 1, 2, ...)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<usize>,
+    /// Serial number filter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    /// Manufacturer filter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manufacturer: Option<String>,
+    /// Product filter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product: Option<String>,
 }
 
 /// Helper struct for deserializing PlutoSDR configuration from TOML
@@ -193,11 +219,51 @@ impl FromStr for Source {
             )),
             #[cfg(feature = "rtlsdr")]
             "rtlsdr" => {
-                // Build URL with defaults for desperado
-                let host = url.host_str().unwrap_or("");
-                Address::Rtlsdr(RtlSdrPath {
-                    rtlsdr: host.to_string(),
-                })
+                // Parse CLI argument and convert to structured config
+                let device_str = url.host_str().unwrap_or("");
+
+                let config = if device_str.is_empty() {
+                    // Default to device 0
+                    RtlSdrDeviceConfig {
+                        device: Some(0),
+                        serial: None,
+                        manufacturer: None,
+                        product: None,
+                    }
+                } else if let Ok(idx) = device_str.parse::<usize>() {
+                    // Numeric string -> device index
+                    RtlSdrDeviceConfig {
+                        device: Some(idx),
+                        serial: None,
+                        manufacturer: None,
+                        product: None,
+                    }
+                } else if let Some(serial) = device_str.strip_prefix("serial=")
+                {
+                    // Serial number format
+                    RtlSdrDeviceConfig {
+                        device: None,
+                        serial: Some(serial.to_string()),
+                        manufacturer: None,
+                        product: None,
+                    }
+                } else {
+                    // Unknown format, warn and default to device 0
+                    eprintln!(
+                        "WARNING: Unrecognized RTL-SDR device format: '{}'\n\
+                         Expected device index (0, 1, 2, ...) or 'serial=XXXXXXXX'.\n\
+                         Defaulting to device 0.",
+                        device_str
+                    );
+                    RtlSdrDeviceConfig {
+                        device: Some(0),
+                        serial: None,
+                        manufacturer: None,
+                        product: None,
+                    }
+                };
+
+                Address::Rtlsdr(RtlSdrPath { config })
             }
             #[cfg(feature = "pluto")]
             "pluto" => {
@@ -275,8 +341,15 @@ impl Source {
                 build_serial(&name)
             }
             #[cfg(feature = "rtlsdr")]
-            Address::Rtlsdr(rtlsdr_path) => {
-                build_serial(&format!("rtlsdr:{}", rtlsdr_path.rtlsdr))
+            Address::Rtlsdr(path) => {
+                let device_str = if let Some(idx) = path.config.device {
+                    idx.to_string()
+                } else if let Some(ref serial) = path.config.serial {
+                    format!("serial={}", serial)
+                } else {
+                    "0".to_string()
+                };
+                build_serial(&format!("rtlsdr:{}", device_str))
             }
             #[cfg(feature = "pluto")]
             Address::Pluto(pluto_path) => {
@@ -304,28 +377,36 @@ impl Source {
     ) {
         match &self.address {
             #[cfg(feature = "rtlsdr")]
-            Address::Rtlsdr(rtlsdr_path) => {
-                let device_str = &rtlsdr_path.rtlsdr;
-                let device_url = if device_str.is_empty() {
-                    format!(
-                        "rtlsdr://?freq={}M&rate={}M&gain={}",
-                        (MODES_FREQ / 1e6) as u32,
-                        (RATE_2_4M / 1e6) as u32,
-                        RTLSDR_GAIN
-                    )
+            Address::Rtlsdr(path) => {
+                // Convert RtlSdrDeviceConfig to DeviceSelector
+                let config = &path.config;
+                let device = if let Some(idx) = config.device {
+                    // Device index specified
+                    DeviceSelector::Index(idx)
+                } else if config.serial.is_some()
+                    || config.manufacturer.is_some()
+                    || config.product.is_some()
+                {
+                    // At least one filter specified
+                    DeviceSelector::Filter {
+                        manufacturer: config.manufacturer.clone(),
+                        product: config.product.clone(),
+                        serial: config.serial.clone(),
+                    }
                 } else {
-                    format!(
-                        "rtlsdr://{}?freq={}M&rate={}M&gain={}",
-                        device_str,
-                        (MODES_FREQ / 1e6) as u32,
-                        (RATE_2_4M / 1e6) as u32,
-                        RTLSDR_GAIN
-                    )
+                    // Empty config, default to device 0
+                    DeviceSelector::Index(0)
                 };
 
                 tokio::spawn(async move {
-                    let config = desperado::DeviceConfig::from_str(&device_url)
-                        .expect("Failed to parse RTL-SDR device config");
+                    let rtlsdr_config = RtlSdrConfig {
+                        device,
+                        center_freq: MODES_FREQ as u32,
+                        sample_rate: RATE_2_4M as u32,
+                        gain: Gain::Manual(RTLSDR_GAIN),
+                        bias_tee: false,
+                    };
+                    let config = DeviceConfig::RtlSdr(rtlsdr_config);
                     let source = IqAsyncSource::from_device_config(&config)
                         .await
                         .expect("Failed to create RTL-SDR source");
@@ -334,20 +415,22 @@ impl Source {
             }
             #[cfg(feature = "pluto")]
             Address::Pluto(pluto_path) => {
-                let uri = pluto_path.pluto.clone();
-                // Build full pluto:// URL for desperado
-                // If uri already has ip: or usb: prefix, use it directly
-                // If it's just an IP address, it can be used as-is (desperado handles it)
-                let device_url = format!(
-                    "pluto://{}?freq={}M&rate={}M&gain=50",
-                    uri,
-                    (MODES_FREQ / 1e6) as u32,
-                    (RATE_2_4M / 1e6) as u32
-                );
+                let mut uri = pluto_path.pluto.clone();
+
+                // The pluto-sdr library requires URIs in the format "ip:..." or "usb:..."
+                // If the URI doesn't already have a prefix, assume it's an IP and add "ip:"
+                if !uri.starts_with("ip:") && !uri.starts_with("usb:") {
+                    uri = format!("ip:{}", uri);
+                }
 
                 tokio::spawn(async move {
-                    let config = desperado::DeviceConfig::from_str(&device_url)
-                        .expect("Failed to parse PlutoSDR device config");
+                    let pluto_config = PlutoConfig {
+                        uri,
+                        center_freq: MODES_FREQ as i64,
+                        sample_rate: RATE_2_4M as i64,
+                        gain: Gain::Manual(50.0),
+                    };
+                    let config = DeviceConfig::Pluto(pluto_config);
                     let source = IqAsyncSource::from_device_config(&config)
                         .await
                         .expect("Failed to create PlutoSDR source");
@@ -357,16 +440,17 @@ impl Source {
             #[cfg(feature = "soapy")]
             Address::Soapy(soapy_path) => {
                 let args = soapy_path.soapy.clone();
-                let device_url = format!(
-                    "soapy://{}?freq={}M&rate={}M&gain=49.6",
-                    args,
-                    (MODES_FREQ / 1e6) as u32,
-                    (RATE_2_4M / 1e6) as u32
-                );
 
                 tokio::spawn(async move {
-                    let config = desperado::DeviceConfig::from_str(&device_url)
-                        .expect("Failed to parse SoapySDR device config");
+                    let soapy_config = SoapyConfig {
+                        args,
+                        center_freq: MODES_FREQ,
+                        sample_rate: RATE_2_4M,
+                        channel: 0,
+                        gain: Gain::Manual(RTLSDR_GAIN),
+                        gain_element: "TUNER".to_string(),
+                    };
+                    let config = DeviceConfig::Soapy(soapy_config);
                     let source = IqAsyncSource::from_device_config(&config)
                         .await
                         .expect("Failed to create SoapySDR source");
@@ -547,8 +631,27 @@ mod test {
             let source = Source::from_str("pluto://192.168.2.1");
             assert!(source.is_ok());
             if let Ok(Source { address, .. }) = source {
-                if let Address::Pluto(path) = address {
-                    assert_eq!(path.pluto, "192.168.2.1");
+                match address {
+                    Address::Pluto(path) => {
+                        assert_eq!(path.pluto, "192.168.2.1");
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            // Test PlutoSDR with hostname
+            let source = Source::from_str("pluto://pluto.local");
+            assert!(
+                source.is_ok(),
+                "Failed to parse pluto://pluto.local: {:?}",
+                source.err()
+            );
+            if let Ok(Source { address, .. }) = source {
+                match address {
+                    Address::Pluto(path) => {
+                        assert_eq!(path.pluto, "pluto.local");
+                    }
+                    _ => unreachable!(),
                 }
             }
 
@@ -560,8 +663,27 @@ mod test {
                 source.err()
             );
             if let Ok(Source { address, .. }) = source {
-                if let Address::Pluto(path) = address {
-                    assert_eq!(path.pluto, "ip:192.168.2.1");
+                match address {
+                    Address::Pluto(path) => {
+                        assert_eq!(path.pluto, "ip:192.168.2.1");
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            // Test PlutoSDR with explicit ip: prefix and hostname
+            let source = Source::from_str("pluto:///ip:pluto.local");
+            assert!(
+                source.is_ok(),
+                "Failed to parse pluto:///ip:pluto.local: {:?}",
+                source.err()
+            );
+            if let Ok(Source { address, .. }) = source {
+                match address {
+                    Address::Pluto(path) => {
+                        assert_eq!(path.pluto, "ip:pluto.local");
+                    }
+                    _ => unreachable!(),
                 }
             }
 
@@ -569,8 +691,11 @@ mod test {
             let source = Source::from_str("pluto:///usb:1.18.5");
             assert!(source.is_ok());
             if let Ok(Source { address, .. }) = source {
-                if let Address::Pluto(path) = address {
-                    assert_eq!(path.pluto, "usb:1.18.5");
+                match address {
+                    Address::Pluto(path) => {
+                        assert_eq!(path.pluto, "usb:1.18.5");
+                    }
+                    _ => unreachable!(),
                 }
             }
 
@@ -578,8 +703,11 @@ mod test {
             let source = Source::from_str("pluto:///usb:");
             assert!(source.is_ok());
             if let Ok(Source { address, .. }) = source {
-                if let Address::Pluto(path) = address {
-                    assert_eq!(path.pluto, "usb:");
+                match address {
+                    Address::Pluto(path) => {
+                        assert_eq!(path.pluto, "usb:");
+                    }
+                    _ => unreachable!(),
                 }
             }
         }
@@ -639,22 +767,63 @@ mod test {
 
     #[test]
     fn test_toml_deserialization() {
-        // Test RTL-SDR deserialization
+        // Test RTL-SDR deserialization - structured format with device index
         #[cfg(feature = "rtlsdr")]
         {
             let toml = r#"
-                rtlsdr = "serial=00000001"
+                rtlsdr = { device = 0 }
                 latitude = 43.5993189
                 longitude = 1.4362472
             "#;
-            let source: Source =
-                toml::from_str(toml).expect("Failed to parse TOML");
+            let source: Source = toml::from_str(toml)
+                .expect("Failed to parse structured TOML with device");
             assert!(matches!(source.address, Address::Rtlsdr(_)));
             if let Address::Rtlsdr(path) = &source.address {
-                assert_eq!(path.rtlsdr, "serial=00000001");
+                assert_eq!(path.config.device, Some(0));
+                assert_eq!(path.config.serial, None);
+            } else {
+                panic!("Expected Address::Rtlsdr");
             }
-            assert_eq!(source.reference.unwrap().latitude, 43.5993189);
-            assert_eq!(source.reference.unwrap().longitude, 1.4362472);
+
+            // Test RTL-SDR deserialization - structured format with serial
+            let toml = r#"
+                rtlsdr = { serial = "00000001" }
+                latitude = 43.5993189
+                longitude = 1.4362472
+            "#;
+            let source: Source = toml::from_str(toml)
+                .expect("Failed to parse structured TOML with serial");
+            assert!(matches!(source.address, Address::Rtlsdr(_)));
+            if let Address::Rtlsdr(path) = &source.address {
+                assert_eq!(path.config.device, None);
+                assert_eq!(path.config.serial, Some("00000001".to_string()));
+            } else {
+                panic!("Expected Address::Rtlsdr");
+            }
+
+            // Test RTL-SDR deserialization - structured format with all filters
+            let toml = r#"
+                rtlsdr = { serial = "00000001", manufacturer = "Realtek", product = "RTL2838UHIDIR" }
+                latitude = 43.5993189
+                longitude = 1.4362472
+            "#;
+            let source: Source = toml::from_str(toml)
+                .expect("Failed to parse structured TOML with filters");
+            assert!(matches!(source.address, Address::Rtlsdr(_)));
+            if let Address::Rtlsdr(path) = &source.address {
+                assert_eq!(path.config.device, None);
+                assert_eq!(path.config.serial, Some("00000001".to_string()));
+                assert_eq!(
+                    path.config.manufacturer,
+                    Some("Realtek".to_string())
+                );
+                assert_eq!(
+                    path.config.product,
+                    Some("RTL2838UHIDIR".to_string())
+                );
+            } else {
+                panic!("Expected Address::Rtlsdr");
+            }
         }
 
         // Test PlutoSDR deserialization

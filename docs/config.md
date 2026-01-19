@@ -61,29 +61,74 @@ serve_port = 8080          # for the REST API
 
 ### RTL-SDR
 
-The following entry is equivalent to `rtlsdr://serial=00000001@LFBO` except that it sets an alias `rtl-sdr`:
+RTL-SDR devices can be configured by device index:
+
+RTL-SDR devices are configured using a structured format in TOML.
+
+**Device selection by index:**
 
 ```toml
 [[sources]]
-name = "rtl-sdr"
-rtlsdr = "serial=00000001"
+name = "rtl-sdr-first"
+rtlsdr = { device = 0 }
 airport = "LFBO"
 ```
 
-For the default RTL-SDR device, use an empty string:
+**Device selection by serial number:**
 
 ```toml
 [[sources]]
-name = "rtl-sdr"
-rtlsdr = ""
+name = "rtl-sdr-by-serial"
+rtlsdr = { serial = "00000001" }
 airport = "LFBO"
 ```
+
+**Device selection with multiple filters:**
+
+```toml
+[[sources]]
+name = "rtl-sdr-filtered"
+rtlsdr = { serial = "00000001", manufacturer = "Realtek", product = "RTL2838UHIDIR" }
+airport = "EHAM"
+```
+
+!!! tip "RTL-SDR Device Selection"
+
+    RTL-SDR devices can be selected using the following fields:
+    
+    - **device**: Device index (0, 1, 2, ...) - `rtlsdr = { device = 0 }`
+    - **serial**: Serial number - `rtlsdr = { serial = "00000001" }`
+    - **manufacturer**: Manufacturer name - `rtlsdr = { manufacturer = "Realtek" }`
+    - **product**: Product name - `rtlsdr = { product = "RTL2838UHIDIR" }`
+    
+    You can combine filters (serial, manufacturer, product) for precise device matching. 
+    All specified filters must match for the device to be selected. This is useful when 
+    you have multiple RTL-SDR devices and want to ensure you always connect to the same 
+    physical device, regardless of USB port order.
+
+!!! note "Command-line Usage"
+
+    When using RTL-SDR from the command line, you can use simple formats:
+    
+    ```bash
+    # By device index
+    jet1090 rtlsdr://0
+    jet1090 rtlsdr://1
+    
+    # By serial number  
+    jet1090 rtlsdr://serial=00000001
+    
+    # Default device (device 0)
+    jet1090 rtlsdr://
+    ```
 
 The `airport` parameter replaces the `latitude` and `longitude` parameter if they are not present.
 
 ### PlutoSDR
 
-PlutoSDR devices can be configured via IP or USB connection.
+PlutoSDR devices can be configured via IP, hostname, or USB connection.
+
+**Note**: The PlutoSDR library requires URIs in the format `ip:address` or `usb:device`. When you provide a simple IP address or hostname (e.g., `192.168.2.1` or `pluto.local`), jet1090 automatically adds the `ip:` prefix.
 
 For IP connection (most common):
 
@@ -96,12 +141,28 @@ longitude = 1.4362472
 altitude = 151.0
 ```
 
-You can also use the explicit `ip:` prefix:
+For hostname-based connection:
+
+```toml
+[[sources]]
+name = "pluto"
+pluto = "pluto.local"
+airport = "LFBO"
+```
+
+You can also use the explicit `ip:` prefix with IP addresses or hostnames:
 
 ```toml
 [[sources]]
 name = "pluto"
 pluto = "ip:192.168.2.1"
+airport = "LFBO"
+```
+
+```toml
+[[sources]]
+name = "pluto"
+pluto = "ip:pluto.local"
 airport = "LFBO"
 ```
 
@@ -123,12 +184,21 @@ pluto = "usb:1.18.5"
 airport = "EHAM"
 ```
 
-!!! tip "Command-line USB device format"
+!!! tip "Command-line formats"
 
-    When specifying USB devices from the command line, use triple slashes for URIs containing colons:
+    When specifying PlutoSDR devices from the command line:
     
     ```bash
-    jet1090 pluto:///usb:1.18.5
+    # IP address or hostname (simple format - ip: prefix added automatically)
+    jet1090 pluto://192.168.2.1
+    jet1090 pluto://pluto.local
+    
+    # With explicit ip: prefix (use triple slashes for URIs with colons)
+    jet1090 pluto:///ip:192.168.2.1
+    jet1090 pluto:///ip:pluto.local
+    
+    # USB device (use triple slashes for URIs with colons)
+    jet1090 pluto:///usb:1.7.5
     ```
     
     In TOML configuration files, you can use the URI directly without the triple slashes.

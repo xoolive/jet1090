@@ -1574,6 +1574,7 @@ dependencies = [
  "pluto-sdr",
  "rtl-sdr-rs",
  "rubato",
+ "rusb",
  "rustfft",
  "soapysdr",
  "tinyaudio",
