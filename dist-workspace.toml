@@ -38,11 +38,13 @@ github-build-setup = "../release_setup.yml"
 # libsoapysdr-dev = "*"
 # soapysdr-module-rtlsdr = "*"  # only for running
 protobuf-compiler = "*"
+libusb-1.0-0-dev = "*"
 
 [dist.dependencies.homebrew]
 # soapysdr = { stage = ["build", "run"] }
 # soapyrtlsdr = { stage = ["run"] }
 protobuf = { stage = ["build"] }
+libusb = { stage = ["build", "run"] }
 
 [dist.github-custom-runners]
 global = "ubuntu-latest"
