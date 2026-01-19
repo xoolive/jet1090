@@ -35,7 +35,7 @@ pub async fn sensors(value: &Source) -> Vec<Sensor> {
             vec![Sensor {
                 serial: value.serial(),
                 name: value.name.clone(),
-                reference: value.reference,
+                reference: value.reference(),
                 altitude: value.altitude,
                 aircraft_count: 0,
                 last_timestamp: 0,
@@ -46,7 +46,7 @@ pub async fn sensors(value: &Source) -> Vec<Sensor> {
             vec![Sensor {
                 serial: value.serial(),
                 name: value.name.clone(),
-                reference: value.reference,
+                reference: value.reference(),
                 altitude: value.altitude,
                 aircraft_count: 0,
                 last_timestamp: 0,
@@ -57,7 +57,7 @@ pub async fn sensors(value: &Source) -> Vec<Sensor> {
             vec![Sensor {
                 serial: value.serial(),
                 name: value.name.clone(),
-                reference: value.reference,
+                reference: value.reference(),
                 altitude: value.altitude,
                 aircraft_count: 0,
                 last_timestamp: 0,
@@ -68,7 +68,7 @@ pub async fn sensors(value: &Source) -> Vec<Sensor> {
             vec![Sensor {
                 serial: value.serial(),
                 name: value.name.clone(),
-                reference: value.reference,
+                reference: value.reference(),
                 altitude: value.altitude,
                 aircraft_count: 0,
                 last_timestamp: 0,

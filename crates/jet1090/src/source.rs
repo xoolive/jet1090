@@ -34,6 +34,9 @@ const RATE_2_4M: f64 = 2.4e6;
 #[cfg(feature = "rtlsdr")]
 const RTLSDR_GAIN: f64 = 49.6;
 
+#[cfg(feature = "pluto")]
+const PLUTO_GAIN: f64 = 73.0;
+
 /**
 * A structure to describe the endpoint to access data.
 *
@@ -103,6 +106,7 @@ pub struct RtlSdrPath {
 /// RTL-SDR device configuration fields
 #[cfg(feature = "rtlsdr")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RtlSdrDeviceConfig {
     /// Device index (0, 1, 2, ...)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,18 +168,104 @@ pub enum Address {
  * Several sensors can be behind a single source of data.
  * Optionally, give it a name (an alias) to spot it easily in decoded data.
  */
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Source {
     /// The address to the raw ADS-B data feed
     #[serde(flatten)]
     pub address: Address,
     /// An (optional) alias for the source name (only for single sensors)
     pub name: Option<String>,
-    /// Localize the source of data (only for single sensors)
-    #[serde(flatten)]
-    pub reference: Option<Position>,
+    /// Latitude of the source (alternative to airport)
+    pub latitude: Option<f64>,
+    /// Longitude of the source (alternative to airport)
+    pub longitude: Option<f64>,
+    /// Airport code to set latitude/longitude (alternative to explicit coordinates)
+    #[serde(skip_serializing)]
+    pub airport: Option<String>,
     /// Localize the source of data, altitude (in m, WGS84 height)
     pub altitude: Option<f64>,
+    /// Gain setting for SDR devices (RTL-SDR default: 49.6, PlutoSDR default: 73.0)
+    #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+    pub gain: Option<f64>,
+}
+
+// Custom deserializer to validate mutually exclusive fields
+impl<'de> Deserialize<'de> for Source {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SourceHelper {
+            #[serde(flatten)]
+            address: Address,
+            name: Option<String>,
+            latitude: Option<f64>,
+            longitude: Option<f64>,
+            airport: Option<String>,
+            altitude: Option<f64>,
+            #[cfg(any(
+                feature = "rtlsdr",
+                feature = "pluto",
+                feature = "soapy"
+            ))]
+            gain: Option<f64>,
+        }
+
+        let helper = SourceHelper::deserialize(deserializer)?;
+
+        // Validate mutually exclusive position fields
+        let has_coords =
+            helper.latitude.is_some() || helper.longitude.is_some();
+        let has_airport = helper.airport.is_some();
+
+        if has_coords && has_airport {
+            return Err(de::Error::custom(
+                "Cannot specify both airport and latitude/longitude. Use either airport code OR explicit coordinates, not both.",
+            ));
+        }
+
+        // Validate that if one coordinate is provided, both must be provided
+        if helper.latitude.is_some() != helper.longitude.is_some() {
+            return Err(de::Error::custom(
+                "Both latitude and longitude must be specified together",
+            ));
+        }
+
+        Ok(Source {
+            address: helper.address,
+            name: helper.name,
+            latitude: helper.latitude,
+            longitude: helper.longitude,
+            airport: helper.airport,
+            altitude: helper.altitude,
+            #[cfg(any(
+                feature = "rtlsdr",
+                feature = "pluto",
+                feature = "soapy"
+            ))]
+            gain: helper.gain,
+        })
+    }
+}
+
+impl Source {
+    /// Get the position reference, resolving airport code if needed
+    pub fn reference(&self) -> Option<Position> {
+        if let (Some(lat), Some(lon)) = (self.latitude, self.longitude) {
+            Some(Position {
+                latitude: lat,
+                longitude: lon,
+            })
+        } else if let Some(ref airport) = self.airport {
+            Position::from_str(airport).ok()
+        } else {
+            None
+        }
+    }
 }
 
 fn build_serial(input: &str) -> u64 {
@@ -304,12 +394,51 @@ impl FromStr for Source {
         let mut source = Source {
             address,
             name: None,
-            reference: None,
+            latitude: None,
+            longitude: None,
+            airport: None,
             altitude: None,
+            #[cfg(any(
+                feature = "rtlsdr",
+                feature = "pluto",
+                feature = "soapy"
+            ))]
+            gain: None,
         };
 
         if let Some(query) = url.query() {
-            source.reference = Position::from_str(query).ok()
+            // Parse query parameters
+            // Supports: ?LFBO, ?gain=40, ?LFBO&gain=40, ?gain=40&LFBO
+            let mut airport_code = None;
+
+            for param in query.split('&') {
+                if let Some(gain_str) = param.strip_prefix("gain=") {
+                    // Parse gain value
+                    if let Ok(gain_val) = gain_str.parse::<f64>() {
+                        #[cfg(any(
+                            feature = "rtlsdr",
+                            feature = "pluto",
+                            feature = "soapy"
+                        ))]
+                        {
+                            source.gain = Some(gain_val);
+                        }
+                    }
+                } else if !param.is_empty() {
+                    // Assume it's an airport code if not a key=value parameter
+                    if !param.contains('=') {
+                        airport_code = Some(param);
+                    }
+                }
+            }
+
+            // Try to parse airport code if found
+            if let Some(code) = airport_code {
+                if let Ok(pos) = Position::from_str(code) {
+                    source.latitude = Some(pos.latitude);
+                    source.longitude = Some(pos.longitude);
+                }
+            }
         };
 
         Ok(source)
@@ -398,12 +527,15 @@ impl Source {
                     DeviceSelector::Index(0)
                 };
 
+                // Use gain from config or default to 49.6 for RTL-SDR
+                let gain_value = self.gain.unwrap_or(RTLSDR_GAIN);
+
                 tokio::spawn(async move {
                     let rtlsdr_config = RtlSdrConfig {
                         device,
                         center_freq: MODES_FREQ as u32,
                         sample_rate: RATE_2_4M as u32,
-                        gain: Gain::Manual(RTLSDR_GAIN),
+                        gain: Gain::Manual(gain_value),
                         bias_tee: false,
                     };
                     let config = DeviceConfig::RtlSdr(rtlsdr_config);
@@ -423,12 +555,15 @@ impl Source {
                     uri = format!("ip:{}", uri);
                 }
 
+                // Use gain from config or default to 50.0 for PlutoSDR
+                let gain_value = self.gain.unwrap_or(PLUTO_GAIN);
+
                 tokio::spawn(async move {
                     let pluto_config = PlutoConfig {
                         uri,
                         center_freq: MODES_FREQ as i64,
                         sample_rate: RATE_2_4M as i64,
-                        gain: Gain::Manual(50.0),
+                        gain: Gain::Manual(gain_value),
                     };
                     let config = DeviceConfig::Pluto(pluto_config);
                     let source = IqAsyncSource::from_device_config(&config)
@@ -441,13 +576,16 @@ impl Source {
             Address::Soapy(soapy_path) => {
                 let args = soapy_path.soapy.clone();
 
+                // Use gain from config or default to 49.6 for SoapySDR (same as RTL-SDR)
+                let gain_value = self.gain.unwrap_or(RTLSDR_GAIN);
+
                 tokio::spawn(async move {
                     let soapy_config = SoapyConfig {
                         args,
                         center_freq: MODES_FREQ,
                         sample_rate: RATE_2_4M,
                         channel: 0,
-                        gain: Gain::Manual(RTLSDR_GAIN),
+                        gain: Gain::Manual(gain_value),
                         gain_element: "TUNER".to_string(),
                     };
                     let config = DeviceConfig::Soapy(soapy_config);
@@ -614,14 +752,15 @@ mod test {
             if let Ok(Source {
                 address,
                 name,
-                reference: Some(pos),
+                latitude,
+                longitude,
                 ..
             }) = source
             {
                 assert!(matches!(address, Address::Rtlsdr(_)));
                 assert_eq!(name, None);
-                assert_eq!(pos.latitude, 43.628101);
-                assert_eq!(pos.longitude, 1.367263);
+                assert_eq!(latitude, Some(43.628101));
+                assert_eq!(longitude, Some(1.367263));
             }
         }
 
@@ -720,13 +859,15 @@ mod test {
         if let Ok(Source {
             address: Address::Tcp(path),
             name,
-            reference,
+            latitude,
+            longitude,
             ..
         }) = source
         {
             assert_eq!(path, AddressPath::Short("0.0.0.0:4003".to_string()));
             assert_eq!(name, None);
-            assert_eq!(reference, None);
+            assert_eq!(latitude, None);
+            assert_eq!(longitude, None);
         }
 
         let source = Source::from_str(":4003?LFBO");
@@ -734,14 +875,15 @@ mod test {
         if let Ok(Source {
             address: Address::Tcp(path),
             name,
-            reference: Some(pos),
+            latitude,
+            longitude,
             ..
         }) = source
         {
             assert_eq!(path, AddressPath::Short("0.0.0.0:4003".to_string()));
             assert_eq!(name, None);
-            assert_eq!(pos.latitude, 43.628101);
-            assert_eq!(pos.longitude, 1.367263);
+            assert_eq!(latitude, Some(43.628101));
+            assert_eq!(longitude, Some(1.367263));
         }
 
         let source = Source::from_str("ws://1.2.3.4:4003/get?LFBO");
@@ -749,7 +891,8 @@ mod test {
         if let Ok(Source {
             address,
             name,
-            reference: Some(pos),
+            latitude,
+            longitude,
             ..
         }) = source
         {
@@ -760,8 +903,8 @@ mod test {
                 ))
             );
             assert_eq!(name, None);
-            assert_eq!(pos.latitude, 43.628101);
-            assert_eq!(pos.longitude, 1.367263);
+            assert_eq!(latitude, Some(43.628101));
+            assert_eq!(longitude, Some(1.367263));
         }
     }
 
@@ -888,5 +1031,240 @@ mod test {
             toml::from_str(toml).expect("Failed to parse TOML");
         assert!(matches!(source.address, Address::Tcp(_)));
         assert_eq!(source.name, Some("local-beast".to_string()));
+    }
+
+    #[test]
+    fn test_invalid_keys_rejected() {
+        // Test that typos in field names are rejected (e.g., "gaoain" instead of "gain")
+        #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+        {
+            let toml = r#"
+                tcp = "localhost:10003"
+                gaoain = 39
+            "#;
+            let result: Result<Source, _> = toml::from_str(toml);
+            assert!(
+                result.is_err(),
+                "Expected error for typo 'gaoain', but parsing succeeded: {:?}",
+                result
+            );
+            if let Err(e) = result {
+                let error_msg = e.to_string();
+                assert!(
+                    error_msg.contains("unknown field")
+                        || error_msg.contains("gaoain"),
+                    "Error should mention unknown field, got: {}",
+                    error_msg
+                );
+            }
+        }
+
+        // Test that invalid keys in the RTL-SDR device config are rejected
+        #[cfg(feature = "rtlsdr")]
+        {
+            let toml = r#"
+                rtlsdr = { device = 0, invalid_param = "bad" }
+            "#;
+            let result: Result<Source, _> = toml::from_str(toml);
+            assert!(
+                result.is_err(),
+                "Expected error for invalid RTL-SDR field, but got: {:?}",
+                result
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "rtlsdr")]
+    fn test_gain_configuration() {
+        // Test default gain (should be None in the struct, 49.6 will be used at runtime)
+        let toml = r#"
+            rtlsdr = { device = 0 }
+            latitude = 43.5993189
+            longitude = 1.4362472
+        "#;
+        let source: Source =
+            toml::from_str(toml).expect("Failed to parse TOML");
+        assert_eq!(source.gain, None);
+
+        // Test explicit gain configuration
+        let toml = r#"
+            rtlsdr = { device = 0 }
+            latitude = 43.5993189
+            longitude = 1.4362472
+            gain = 42.5
+        "#;
+        let source: Source =
+            toml::from_str(toml).expect("Failed to parse TOML with gain");
+        assert_eq!(source.gain, Some(42.5));
+
+        // Test gain with serial number selection
+        let toml = r#"
+            rtlsdr = { serial = "00000001" }
+            gain = 30.0
+        "#;
+        let source: Source = toml::from_str(toml)
+            .expect("Failed to parse TOML with serial and gain");
+        if let Address::Rtlsdr(path) = &source.address {
+            assert_eq!(path.config.serial, Some("00000001".to_string()));
+        }
+        assert_eq!(source.gain, Some(30.0));
+    }
+
+    #[test]
+    fn test_mutually_exclusive_position_fields() {
+        // Test that airport and latitude/longitude cannot be specified together
+        let toml = r#"
+            tcp = "localhost:10003"
+            airport = "LFBO"
+            latitude = 43.628101
+            longitude = 1.367263
+        "#;
+        let result: Result<Source, _> = toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "Expected error when both airport and coordinates are specified: {:?}",
+            result
+        );
+        if let Err(e) = result {
+            let error_msg = e.to_string();
+            assert!(
+                error_msg.contains("airport")
+                    || error_msg.contains("latitude")
+                    || error_msg.contains("both"),
+                "Error should mention conflicting fields, got: {}",
+                error_msg
+            );
+        }
+
+        // Test that latitude without longitude is rejected
+        let toml = r#"
+            tcp = "localhost:10003"
+            latitude = 43.628101
+        "#;
+        let result: Result<Source, _> = toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "Expected error when only latitude is specified: {:?}",
+            result
+        );
+        if let Err(e) = result {
+            let error_msg = e.to_string();
+            assert!(
+                error_msg.contains("latitude")
+                    && error_msg.contains("longitude"),
+                "Error should mention both latitude and longitude, got: {}",
+                error_msg
+            );
+        }
+
+        // Test that longitude without latitude is rejected
+        let toml = r#"
+            tcp = "localhost:10003"
+            longitude = 1.367263
+        "#;
+        let result: Result<Source, _> = toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "Expected error when only longitude is specified: {:?}",
+            result
+        );
+
+        // Test that airport alone is valid
+        let toml = r#"
+            tcp = "localhost:10003"
+            airport = "LFBO"
+        "#;
+        let result: Result<Source, _> = toml::from_str(toml);
+        assert!(
+            result.is_ok(),
+            "Airport alone should be valid: {:?}",
+            result
+        );
+
+        // Test that latitude+longitude together is valid
+        let toml = r#"
+            tcp = "localhost:10003"
+            latitude = 43.628101
+            longitude = 1.367263
+        "#;
+        let result: Result<Source, _> = toml::from_str(toml);
+        assert!(
+            result.is_ok(),
+            "Latitude+longitude together should be valid: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+    fn test_gain_in_uri() {
+        // Test gain parameter in URI
+        let source = Source::from_str("rtlsdr://0?gain=40");
+        assert!(
+            source.is_ok(),
+            "Failed to parse URI with gain: {:?}",
+            source
+        );
+        if let Ok(src) = source {
+            assert_eq!(src.gain, Some(40.0));
+        }
+
+        // Test gain with airport code (using ? syntax)
+        let source = Source::from_str("rtlsdr://0?LFBO&gain=42.5");
+        assert!(
+            source.is_ok(),
+            "Failed to parse URI with airport and gain: {:?}",
+            source
+        );
+        if let Ok(src) = source {
+            assert_eq!(src.gain, Some(42.5));
+            assert_eq!(src.latitude, Some(43.628101));
+            assert_eq!(src.longitude, Some(1.367263));
+        }
+
+        // Test gain with airport code (using @ syntax for retro-compatibility)
+        let source = Source::from_str("rtlsdr://0@LFBO&gain=42.5");
+        assert!(
+            source.is_ok(),
+            "Failed to parse URI with @ and gain: {:?}",
+            source
+        );
+        if let Ok(src) = source {
+            assert_eq!(src.gain, Some(42.5));
+            assert_eq!(src.latitude, Some(43.628101));
+            assert_eq!(src.longitude, Some(1.367263));
+        }
+
+        // Test gain before airport code
+        let source = Source::from_str("rtlsdr://0?gain=35&LFBO");
+        assert!(
+            source.is_ok(),
+            "Failed to parse URI with gain before airport: {:?}",
+            source
+        );
+        if let Ok(src) = source {
+            assert_eq!(src.gain, Some(35.0));
+            assert_eq!(src.latitude, Some(43.628101));
+            assert_eq!(src.longitude, Some(1.367263));
+        }
+
+        // Test TCP with gain
+        let source = Source::from_str("tcp://localhost:10003?gain=30");
+        assert!(
+            source.is_ok(),
+            "Failed to parse TCP URI with gain: {:?}",
+            source
+        );
+        if let Ok(src) = source {
+            assert_eq!(src.gain, Some(30.0));
+        }
+
+        // Test that invalid gain value is ignored (non-numeric)
+        let source = Source::from_str("rtlsdr://0?gain=invalid");
+        assert!(source.is_ok(), "Should parse URI even with invalid gain");
+        if let Ok(src) = source {
+            assert_eq!(src.gain, None); // Invalid gain should be ignored
+        }
     }
 }

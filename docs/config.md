@@ -106,6 +106,26 @@ airport = "EHAM"
     you have multiple RTL-SDR devices and want to ensure you always connect to the same 
     physical device, regardless of USB port order.
 
+!!! tip "Gain Configuration"
+
+    You can set a custom gain value for SDR devices using the `gain` parameter:
+
+    ```toml
+    [[sources]]
+    name = "rtl-sdr-custom-gain"
+    rtlsdr = { device = 0 }
+    gain = 42.5
+    airport = "LFBO"
+    ```
+
+    Default gain values:
+    - **RTL-SDR**: 49.6 dB (optimized for ADS-B reception)
+    - **PlutoSDR**: 73.0 dB
+    - **SoapySDR**: 49.6 dB (same as RTL-SDR)
+
+    If not specified, the default value for each device type will be used.
+
+
 !!! note "Command-line Usage"
 
     When using RTL-SDR from the command line, you can use simple formats:
@@ -120,6 +140,17 @@ airport = "EHAM"
     
     # Default device (device 0)
     jet1090 rtlsdr://
+    
+    # With custom gain
+    jet1090 rtlsdr://0?gain=40
+    
+    # With location (airport code) - using ? or @ syntax
+    jet1090 rtlsdr://0?LFBO
+    jet1090 rtlsdr://0@LFBO
+    
+    # Combining gain and location
+    jet1090 rtlsdr://0?LFBO&gain=42.5
+    jet1090 rtlsdr://0@LFBO&gain=42.5
     ```
 
 The `airport` parameter replaces the `latitude` and `longitude` parameter if they are not present.
