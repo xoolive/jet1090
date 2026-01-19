@@ -187,6 +187,9 @@ pub struct Source {
     /// Gain setting for SDR devices (RTL-SDR default: 49.6, PlutoSDR default: 73.0)
     #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
     pub gain: Option<f64>,
+    /// Enable bias-tee to power external LNA (RTL-SDR only, default: false)
+    #[cfg(feature = "rtlsdr")]
+    pub bias_tee: Option<bool>,
 }
 
 // Custom deserializer to validate mutually exclusive fields
@@ -213,6 +216,8 @@ impl<'de> Deserialize<'de> for Source {
                 feature = "soapy"
             ))]
             gain: Option<f64>,
+            #[cfg(feature = "rtlsdr")]
+            bias_tee: Option<bool>,
         }
 
         let helper = SourceHelper::deserialize(deserializer)?;
@@ -248,6 +253,8 @@ impl<'de> Deserialize<'de> for Source {
                 feature = "soapy"
             ))]
             gain: helper.gain,
+            #[cfg(feature = "rtlsdr")]
+            bias_tee: helper.bias_tee,
         })
     }
 }
@@ -404,6 +411,8 @@ impl FromStr for Source {
                 feature = "soapy"
             ))]
             gain: None,
+            #[cfg(feature = "rtlsdr")]
+            bias_tee: None,
         };
 
         if let Some(query) = url.query() {
@@ -423,6 +432,17 @@ impl FromStr for Source {
                         {
                             source.gain = Some(gain_val);
                         }
+                    }
+                } else if let Some(bias_str) = param.strip_prefix("bias_tee=") {
+                    // Parse bias_tee value (true/false, 1/0, yes/no)
+                    #[cfg(feature = "rtlsdr")]
+                    {
+                        source.bias_tee = match bias_str.to_lowercase().as_str()
+                        {
+                            "true" | "1" | "yes" | "on" => Some(true),
+                            "false" | "0" | "no" | "off" => Some(false),
+                            _ => None, // Invalid value, ignore
+                        };
                     }
                 } else if !param.is_empty() {
                     // Assume it's an airport code if not a key=value parameter
@@ -530,13 +550,16 @@ impl Source {
                 // Use gain from config or default to 49.6 for RTL-SDR
                 let gain_value = self.gain.unwrap_or(RTLSDR_GAIN);
 
+                // Use bias_tee from config or default to false
+                let bias_tee_enabled = self.bias_tee.unwrap_or(false);
+
                 tokio::spawn(async move {
                     let rtlsdr_config = RtlSdrConfig {
                         device,
                         center_freq: MODES_FREQ as u32,
                         sample_rate: RATE_2_4M as u32,
                         gain: Gain::Manual(gain_value),
-                        bias_tee: false,
+                        bias_tee: bias_tee_enabled,
                     };
                     let config = DeviceConfig::RtlSdr(rtlsdr_config);
                     let source = IqAsyncSource::from_device_config(&config)
@@ -1265,6 +1288,69 @@ mod test {
         assert!(source.is_ok(), "Should parse URI even with invalid gain");
         if let Ok(src) = source {
             assert_eq!(src.gain, None); // Invalid gain should be ignored
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "rtlsdr")]
+    fn test_bias_tee_configuration() {
+        // Test bias_tee in TOML
+        let toml = r#"
+            rtlsdr = { device = 0 }
+            bias_tee = true
+        "#;
+        let source: Source =
+            toml::from_str(toml).expect("Failed to parse TOML with bias_tee");
+        assert_eq!(source.bias_tee, Some(true));
+
+        // Test default (no bias_tee specified)
+        let toml = r#"
+            rtlsdr = { device = 0 }
+        "#;
+        let source: Source = toml::from_str(toml)
+            .expect("Failed to parse TOML without bias_tee");
+        assert_eq!(source.bias_tee, None);
+
+        // Test bias_tee = false
+        let toml = r#"
+            rtlsdr = { device = 0 }
+            bias_tee = false
+        "#;
+        let source: Source = toml::from_str(toml)
+            .expect("Failed to parse TOML with bias_tee=false");
+        assert_eq!(source.bias_tee, Some(false));
+
+        // Test bias_tee in URI - various formats
+        let test_cases = vec![
+            ("rtlsdr://0?bias_tee=true", Some(true)),
+            ("rtlsdr://0?bias_tee=1", Some(true)),
+            ("rtlsdr://0?bias_tee=yes", Some(true)),
+            ("rtlsdr://0?bias_tee=on", Some(true)),
+            ("rtlsdr://0?bias_tee=false", Some(false)),
+            ("rtlsdr://0?bias_tee=0", Some(false)),
+            ("rtlsdr://0?bias_tee=no", Some(false)),
+            ("rtlsdr://0?bias_tee=off", Some(false)),
+            ("rtlsdr://0?bias_tee=invalid", None), // Invalid value ignored
+            ("rtlsdr://0", None),                  // No bias_tee specified
+        ];
+
+        for (uri, expected) in test_cases {
+            let source = Source::from_str(uri);
+            assert!(source.is_ok(), "Failed to parse URI: {}", uri);
+            if let Ok(src) = source {
+                assert_eq!(src.bias_tee, expected, "Failed for URI: {}", uri);
+            }
+        }
+
+        // Test combined with gain and airport
+        let source =
+            Source::from_str("rtlsdr://0?LFBO&gain=42.5&bias_tee=true");
+        assert!(source.is_ok(), "Failed to parse URI with all parameters");
+        if let Ok(src) = source {
+            assert_eq!(src.bias_tee, Some(true));
+            assert_eq!(src.gain, Some(42.5));
+            assert_eq!(src.latitude, Some(43.628101));
+            assert_eq!(src.longitude, Some(1.367263));
         }
     }
 }

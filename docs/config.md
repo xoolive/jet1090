@@ -125,6 +125,26 @@ airport = "EHAM"
 
     If not specified, the default value for each device type will be used.
 
+!!! tip "Bias-Tee Configuration (RTL-SDR)"
+
+    Enable bias-tee to provide power to an external Low Noise Amplifier (LNA):
+    
+    ```toml
+    [[sources]]
+    name = "rtl-sdr-with-lna"
+    rtlsdr = { device = 0 }
+    bias_tee = true
+    gain = 42.5
+    airport = "LFBO"
+    ```
+    
+    **Default**: `false` (disabled)
+    
+    !!! warning "Hardware Safety"
+    
+        Only enable bias-tee if you have an LNA that requires power. 
+        Enabling it without proper equipment can damage your hardware.
+
 
 !!! note "Command-line Usage"
 
@@ -144,6 +164,9 @@ airport = "EHAM"
     # With custom gain
     jet1090 rtlsdr://0?gain=40
     
+    # With bias-tee enabled
+    jet1090 rtlsdr://0?bias_tee=true
+    
     # With location (airport code) - using ? or @ syntax
     jet1090 rtlsdr://0?LFBO
     jet1090 rtlsdr://0@LFBO
@@ -151,6 +174,9 @@ airport = "EHAM"
     # Combining gain and location
     jet1090 rtlsdr://0?LFBO&gain=42.5
     jet1090 rtlsdr://0@LFBO&gain=42.5
+    
+    # Combining all parameters
+    jet1090 rtlsdr://0?LFBO&gain=42.5&bias_tee=true
     ```
 
 The `airport` parameter replaces the `latitude` and `longitude` parameter if they are not present.
