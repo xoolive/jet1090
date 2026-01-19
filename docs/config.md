@@ -125,14 +125,25 @@ airport = "EHAM"
 
     If not specified, the default value for each device type will be used.
 
-!!! tip "Bias-Tee Configuration (RTL-SDR)"
+!!! tip "Bias-Tee Configuration (RTL-SDR and SoapySDR)"
 
     Enable bias-tee to provide power to an external Low Noise Amplifier (LNA):
     
+    **RTL-SDR:**
     ```toml
     [[sources]]
     name = "rtl-sdr-with-lna"
     rtlsdr = { device = 0 }
+    bias_tee = true
+    gain = 42.5
+    airport = "LFBO"
+    ```
+    
+    **SoapySDR:**
+    ```toml
+    [[sources]]
+    name = "soapy-rtlsdr-with-lna"
+    soapy = "driver=rtlsdr"
     bias_tee = true
     gain = 42.5
     airport = "LFBO"
@@ -144,6 +155,9 @@ airport = "EHAM"
     
         Only enable bias-tee if you have an LNA that requires power. 
         Enabling it without proper equipment can damage your hardware.
+        
+        Note: Bias-tee support in SoapySDR depends on the underlying driver.
+        It's primarily supported when using SoapySDR with RTL-SDR devices.
 
 
 !!! note "Command-line Usage"
@@ -268,6 +282,17 @@ SoapySDR devices can be configured with driver arguments:
 [[sources]]
 name = "soapy-rtlsdr"
 soapy = "driver=rtlsdr"
+airport = "LFBO"
+```
+
+With custom gain and bias-tee:
+
+```toml
+[[sources]]
+name = "soapy-rtlsdr-with-lna"
+soapy = "driver=rtlsdr"
+gain = 42.5
+bias_tee = true
 airport = "LFBO"
 ```
 
