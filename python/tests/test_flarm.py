@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import pandas as pd  # type: ignore
+import pandas as pd
 import pytest
 
 from rs1090 import flarm

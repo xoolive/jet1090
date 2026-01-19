@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import pickle
-from typing import Iterable, Sequence, TypeVar, overload
+from typing import (
+    Any,
+    Callable,
+    Iterable,
+    ParamSpec,
+    Sequence,
+    TypeVar,
+    overload,
+)
 
-import pandas as pd  # type: ignore
+import pandas as pd
 
 from ._rust import (
     aircraft_information,
@@ -59,13 +67,13 @@ from .stubs import (
 
 try:
     # new in Python 3.12
-    from itertools import batched  # type: ignore
+    from itertools import batched  # type: ignore[attr-defined]
 except ImportError:
     from itertools import islice
 
     T = TypeVar("T")
 
-    def batched(iterable: Sequence[T], n: int) -> Iterable[tuple[T, ...]]:  # type: ignore
+    def batched(iterable: Sequence[T], n: int) -> Iterable[tuple[T, ...]]:
         # batched('ABCDEFG', 3) --> ABC DEF G
         if n < 1:
             raise ValueError("n must be at least one")
@@ -74,28 +82,37 @@ except ImportError:
             yield batch
 
 
-def unpickle_fun(fun):
-    def wrapped_fun(a):
-        int_list = fun(a)
+P = ParamSpec("P")
+
+
+def unpickle_fun(fun: Callable[P, list[int]]) -> Callable[P, Any]:
+    """Wrapper that unpickles the return value from Rust functions.
+
+    The Rust bindings return pickled objects as list[int], which this
+    wrapper converts back to the actual Python types.
+    """
+
+    def wrapped_fun(*args: P.args, **kwargs: P.kwargs) -> Any:
+        int_list = fun(*args, **kwargs)
         return pickle.loads(bytes(int_list))
 
     return wrapped_fun
 
 
-decode_bds05 = unpickle_fun(decode_bds05)
-decode_bds10 = unpickle_fun(decode_bds10)
-decode_bds17 = unpickle_fun(decode_bds17)
-decode_bds18 = unpickle_fun(decode_bds18)
-decode_bds19 = unpickle_fun(decode_bds19)
-decode_bds20 = unpickle_fun(decode_bds20)
-decode_bds21 = unpickle_fun(decode_bds21)
-decode_bds30 = unpickle_fun(decode_bds30)
-decode_bds40 = unpickle_fun(decode_bds40)
-decode_bds44 = unpickle_fun(decode_bds44)
-decode_bds45 = unpickle_fun(decode_bds45)
-decode_bds50 = unpickle_fun(decode_bds50)
-decode_bds60 = unpickle_fun(decode_bds60)
-decode_bds65 = unpickle_fun(decode_bds65)
+decode_bds05 = unpickle_fun(decode_bds05)  # type: ignore[arg-type]
+decode_bds10 = unpickle_fun(decode_bds10)  # type: ignore[arg-type]
+decode_bds17 = unpickle_fun(decode_bds17)  # type: ignore[arg-type]
+decode_bds18 = unpickle_fun(decode_bds18)  # type: ignore[arg-type]
+decode_bds19 = unpickle_fun(decode_bds19)  # type: ignore[arg-type]
+decode_bds20 = unpickle_fun(decode_bds20)  # type: ignore[arg-type]
+decode_bds21 = unpickle_fun(decode_bds21)  # type: ignore[arg-type]
+decode_bds30 = unpickle_fun(decode_bds30)  # type: ignore[arg-type]
+decode_bds40 = unpickle_fun(decode_bds40)  # type: ignore[arg-type]
+decode_bds44 = unpickle_fun(decode_bds44)  # type: ignore[arg-type]
+decode_bds45 = unpickle_fun(decode_bds45)  # type: ignore[arg-type]
+decode_bds50 = unpickle_fun(decode_bds50)  # type: ignore[arg-type]
+decode_bds60 = unpickle_fun(decode_bds60)  # type: ignore[arg-type]
+decode_bds65 = unpickle_fun(decode_bds65)  # type: ignore[arg-type]
 
 
 __all__ = [
@@ -144,7 +161,7 @@ __all__ = [
 
 
 @overload
-def decode(  # type: ignore
+def decode(
     msg: str,
     timestamp: None | float = None,
     *,
@@ -194,7 +211,7 @@ def decode(
             ts = list(batched(timestamp, batch))
             payload = decode_1090t_vec(batches, ts, reference)
 
-    return pickle.loads(bytes(payload))  # type: ignore
+    return pickle.loads(bytes(payload))  # type: ignore[no-any-return]
 
 
 @overload
@@ -249,4 +266,4 @@ def flarm(
 
         payload = decode_flarm_vec(batches, t, reflat, reflon)
 
-    return pickle.loads(bytes(payload))  # type: ignore
+    return pickle.loads(bytes(payload))  # type: ignore[no-any-return]

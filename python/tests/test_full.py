@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import pandas as pd  # type: ignore
+import pandas as pd
 
 from rs1090 import decode
 
