@@ -4,31 +4,31 @@ use std::str::FromStr;
 
 use rs1090::prelude::*;
 
-#[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+#[cfg(feature = "sdr")]
 use rs1090::source::iqread;
 #[cfg(feature = "sero")]
 use rs1090::source::sero;
 #[cfg(feature = "ssh")]
 use rs1090::source::ssh::{TunnelledTcp, TunnelledWebsocket};
 
+#[cfg(feature = "sdr")]
+use desperado::IqAsyncSource;
 #[cfg(feature = "pluto")]
 use desperado::pluto::PlutoConfig;
 #[cfg(feature = "rtlsdr")]
 use desperado::rtlsdr::{DeviceSelector, RtlSdrConfig};
 #[cfg(feature = "soapy")]
 use desperado::soapy::SoapyConfig;
-#[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
-use desperado::IqAsyncSource;
-#[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+#[cfg(feature = "sdr")]
 use desperado::{DeviceConfig, Gain};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 use tracing::error;
 use url::Url;
 
-#[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+#[cfg(feature = "sdr")]
 const MODES_FREQ: f64 = 1.09e9;
-#[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+#[cfg(feature = "sdr")]
 const RATE_2_4M: f64 = 2.4e6;
 
 #[cfg(feature = "rtlsdr")]
@@ -140,6 +140,14 @@ pub struct SoapyPath {
     pub soapy: String,
 }
 
+/// Structured file configuration for TOML
+#[cfg(feature = "sdr")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FilePath {
+    pub file: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Address {
@@ -149,6 +157,9 @@ pub enum Address {
     Udp(String),
     /// Address to a websocket feed, e.g. `ws://localhost:9876/1234`
     Websocket(WebsocketPath),
+    /// An IQ file recorded from an SDR, e.g. `file://~/adsb.iq`
+    #[cfg(feature = "sdr")]
+    File(FilePath),
     /// An RTL-SDR device, e.g. `rtlsdr://` or `rtlsdr://serial=00000001`
     #[cfg(feature = "rtlsdr")]
     Rtlsdr(RtlSdrPath),
@@ -185,11 +196,14 @@ pub struct Source {
     /// Localize the source of data, altitude (in m, WGS84 height)
     pub altitude: Option<f64>,
     /// Gain setting for SDR devices (RTL-SDR default: 49.6, PlutoSDR default: 73.0)
-    #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+    #[cfg(feature = "sdr")]
     pub gain: Option<f64>,
     /// Enable bias-tee to power external LNA (RTL-SDR and SoapySDR, default: false)
     #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
     pub bias_tee: Option<bool>,
+    /// IQ file format (cu8, cs8, cs16, default: cu8 for RTL-SDR compatibility)
+    #[cfg(feature = "sdr")]
+    pub iq_format: Option<String>,
 }
 
 // Custom deserializer to validate mutually exclusive fields
@@ -210,14 +224,12 @@ impl<'de> Deserialize<'de> for Source {
             longitude: Option<f64>,
             airport: Option<String>,
             altitude: Option<f64>,
-            #[cfg(any(
-                feature = "rtlsdr",
-                feature = "pluto",
-                feature = "soapy"
-            ))]
+            #[cfg(feature = "sdr")]
             gain: Option<f64>,
             #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
             bias_tee: Option<bool>,
+            #[cfg(feature = "sdr")]
+            iq_format: Option<String>,
         }
 
         let helper = SourceHelper::deserialize(deserializer)?;
@@ -247,14 +259,12 @@ impl<'de> Deserialize<'de> for Source {
             longitude: helper.longitude,
             airport: helper.airport,
             altitude: helper.altitude,
-            #[cfg(any(
-                feature = "rtlsdr",
-                feature = "pluto",
-                feature = "soapy"
-            ))]
+            #[cfg(feature = "sdr")]
             gain: helper.gain,
             #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
             bias_tee: helper.bias_tee,
+            #[cfg(feature = "sdr")]
+            iq_format: helper.iq_format,
         })
     }
 }
@@ -389,6 +399,18 @@ impl FromStr for Source {
                     soapy: args.to_string(),
                 })
             }
+            #[cfg(feature = "sdr")]
+            "file" => {
+                // file:///path/to/file.iq or file://~/adsb.iq
+                let path = if let Some(host) = url.host_str() {
+                    // file://~/adsb.iq -> host is "~", path is "/adsb.iq"
+                    format!("{}{}", host, url.path())
+                } else {
+                    // file:///absolute/path.iq
+                    url.path().to_string()
+                };
+                Address::File(FilePath { file: path })
+            }
             "ws" => Address::Websocket(WebsocketPath::Short(format!(
                 "ws://{}:{}/{}",
                 url.host_str().unwrap_or("0.0.0.0"),
@@ -405,14 +427,12 @@ impl FromStr for Source {
             longitude: None,
             airport: None,
             altitude: None,
-            #[cfg(any(
-                feature = "rtlsdr",
-                feature = "pluto",
-                feature = "soapy"
-            ))]
+            #[cfg(feature = "sdr")]
             gain: None,
             #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
             bias_tee: None,
+            #[cfg(feature = "sdr")]
+            iq_format: None,
         };
 
         if let Some(query) = url.query() {
@@ -421,30 +441,29 @@ impl FromStr for Source {
             let mut airport_code = None;
 
             for param in query.split('&') {
+                #[cfg(feature = "sdr")]
                 if let Some(gain_str) = param.strip_prefix("gain=") {
                     // Parse gain value
                     if let Ok(gain_val) = gain_str.parse::<f64>() {
-                        #[cfg(any(
-                            feature = "rtlsdr",
-                            feature = "pluto",
-                            feature = "soapy"
-                        ))]
-                        {
-                            source.gain = Some(gain_val);
-                        }
+                        source.gain = Some(gain_val);
                     }
-                } else if let Some(bias_str) = param.strip_prefix("bias_tee=") {
+                }
+                #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
+                if let Some(bias_str) = param.strip_prefix("bias_tee=") {
                     // Parse bias_tee value (true/false, 1/0, yes/no)
-                    #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
-                    {
-                        source.bias_tee = match bias_str.to_lowercase().as_str()
-                        {
-                            "true" | "1" | "yes" | "on" => Some(true),
-                            "false" | "0" | "no" | "off" => Some(false),
-                            _ => None, // Invalid value, ignore
-                        };
-                    }
-                } else if !param.is_empty() {
+                    source.bias_tee = match bias_str.to_lowercase().as_str() {
+                        "true" | "1" | "yes" | "on" => Some(true),
+                        "false" | "0" | "no" | "off" => Some(false),
+                        _ => None, // Invalid value, ignore
+                    };
+                }
+                #[cfg(feature = "sdr")]
+                if let Some(format_str) = param.strip_prefix("format=") {
+                    // Parse IQ format (cu8, cs8, cs16, cf32)
+                    source.iq_format = Some(format_str.to_string());
+                }
+
+                if !param.is_empty() {
                     // Assume it's an airport code if not a key=value parameter
                     if !param.contains('=') {
                         airport_code = Some(param);
@@ -488,6 +507,10 @@ impl Source {
                     }
                 };
                 build_serial(&name)
+            }
+            #[cfg(feature = "sdr")]
+            Address::File(file_path) => {
+                build_serial(&format!("file:{}", file_path.file))
             }
             #[cfg(feature = "rtlsdr")]
             Address::Rtlsdr(path) => {
@@ -618,6 +641,63 @@ impl Source {
                         .await
                         .expect("Failed to create SoapySDR source");
                     iqread::receiver(tx, source, serial, RATE_2_4M, name).await
+                });
+            }
+            #[cfg(feature = "sdr")]
+            Address::File(file_path) => {
+                let path = file_path.file.clone();
+                let iq_format_str =
+                    self.iq_format.clone().unwrap_or_else(|| "cu8".to_string());
+
+                tokio::spawn(async move {
+                    use desperado::{IqAsyncSource, IqFormat};
+                    use std::str::FromStr;
+                    use std::time::UNIX_EPOCH;
+
+                    let iq_format = IqFormat::from_str(&iq_format_str)
+                        .unwrap_or_else(|_| {
+                            eprintln!(
+                                "Invalid IQ format '{}', defaulting to cu8",
+                                iq_format_str
+                            );
+                            IqFormat::Cu8
+                        });
+
+                    // Get file modification time to use as base timestamp
+                    let expanded_path =
+                        desperado::expanduser(path.clone().into());
+                    let file_metadata = std::fs::metadata(&expanded_path)
+                        .expect("Failed to get file metadata");
+                    let file_time = file_metadata
+                        .modified()
+                        .or_else(|_| file_metadata.created())
+                        .unwrap_or(UNIX_EPOCH);
+                    let base_timestamp = file_time
+                        .duration_since(UNIX_EPOCH)
+                        .expect("File time before UNIX epoch")
+                        .as_secs_f64();
+
+                    let chunk_size = 8136_u64;
+                    let source = IqAsyncSource::from_file(
+                        &path,
+                        MODES_FREQ as u32,
+                        RATE_2_4M as u32,
+                        chunk_size as usize,
+                        iq_format,
+                    )
+                    .await
+                    .expect("Failed to open IQ file");
+
+                    iqread::file_receiver(
+                        tx,
+                        source,
+                        serial,
+                        RATE_2_4M,
+                        base_timestamp,
+                        chunk_size,
+                        name,
+                    )
+                    .await
                 });
             }
             Address::Sero(sero) => {
@@ -1061,7 +1141,7 @@ mod test {
     #[test]
     fn test_invalid_keys_rejected() {
         // Test that typos in field names are rejected (e.g., "gaoain" instead of "gain")
-        #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+        #[cfg(feature = "sdr")]
         {
             let toml = r#"
                 tcp = "localhost:10003"
@@ -1222,7 +1302,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(any(feature = "rtlsdr", feature = "pluto", feature = "soapy"))]
+    #[cfg(feature = "sdr")]
     fn test_gain_in_uri() {
         // Test gain parameter in URI
         let source = Source::from_str("rtlsdr://0?gain=40");
@@ -1291,6 +1371,183 @@ mod test {
         if let Ok(src) = source {
             assert_eq!(src.gain, None); // Invalid gain should be ignored
         }
+    }
+
+    #[test]
+    #[cfg(feature = "sdr")]
+    fn test_file_source_url_parsing() {
+        // Test absolute path
+        let source = Source::from_str("file:///home/user/adsb.iq");
+        assert!(
+            source.is_ok(),
+            "Failed to parse file:// with absolute path: {:?}",
+            source.err()
+        );
+        if let Ok(Source { address, .. }) = source {
+            match address {
+                Address::File(path) => {
+                    assert_eq!(path.file, "/home/user/adsb.iq");
+                }
+                _ => panic!("Expected Address::File, got {:?}", address),
+            }
+        }
+
+        // Test path with tilde
+        let source = Source::from_str("file://~/recordings/adsb.iq");
+        assert!(
+            source.is_ok(),
+            "Failed to parse file:// with tilde: {:?}",
+            source.err()
+        );
+        if let Ok(Source { address, .. }) = source {
+            match address {
+                Address::File(path) => {
+                    assert_eq!(path.file, "~/recordings/adsb.iq");
+                }
+                _ => panic!("Expected Address::File, got {:?}", address),
+            }
+        }
+
+        // Test with format parameter
+        let source = Source::from_str("file:///home/user/adsb.iq?format=cu8");
+        assert!(
+            source.is_ok(),
+            "Failed to parse file:// with format parameter: {:?}",
+            source.err()
+        );
+        if let Ok(Source {
+            address, iq_format, ..
+        }) = source
+        {
+            match address {
+                Address::File(path) => {
+                    assert_eq!(path.file, "/home/user/adsb.iq");
+                }
+                _ => panic!("Expected Address::File, got {:?}", address),
+            }
+            assert_eq!(iq_format, Some("cu8".to_string()));
+        }
+
+        // Test with cs8 format
+        let source = Source::from_str("file://~/test.iq?format=cs8");
+        assert!(source.is_ok(), "Failed to parse file:// with cs8 format");
+        if let Ok(Source { iq_format, .. }) = source {
+            assert_eq!(iq_format, Some("cs8".to_string()));
+        }
+
+        // Test with cs16 format
+        let source = Source::from_str("file:///data/recording.iq?format=cs16");
+        assert!(source.is_ok(), "Failed to parse file:// with cs16 format");
+        if let Ok(Source { iq_format, .. }) = source {
+            assert_eq!(iq_format, Some("cs16".to_string()));
+        }
+
+        // Test with format and airport
+        let source =
+            Source::from_str("file:///home/user/adsb.iq?format=cu8&LFBO");
+        assert!(
+            source.is_ok(),
+            "Failed to parse file:// with format and airport: {:?}",
+            source.err()
+        );
+        if let Ok(Source {
+            address,
+            iq_format,
+            latitude,
+            longitude,
+            ..
+        }) = source
+        {
+            match address {
+                Address::File(path) => {
+                    assert_eq!(path.file, "/home/user/adsb.iq");
+                }
+                _ => panic!("Expected Address::File, got {:?}", address),
+            }
+            assert_eq!(iq_format, Some("cu8".to_string()));
+            assert_eq!(latitude, Some(43.628101));
+            assert_eq!(longitude, Some(1.367263));
+        }
+
+        // Test without format parameter (should default to None, then cu8 at runtime)
+        let source = Source::from_str("file:///path/to/file.iq");
+        assert!(source.is_ok(), "Failed to parse file:// without format");
+        if let Ok(Source { iq_format, .. }) = source {
+            assert_eq!(iq_format, None);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "sdr")]
+    fn test_file_source_toml_deserialization() {
+        // Test basic file source
+        let toml = r#"
+            file = "/home/user/adsb.iq"
+            iq_format = "cu8"
+            name = "Test Recording"
+        "#;
+        let source: Source =
+            toml::from_str(toml).expect("Failed to parse file TOML");
+        match source.address {
+            Address::File(path) => {
+                assert_eq!(path.file, "/home/user/adsb.iq");
+            }
+            _ => panic!("Expected Address::File"),
+        }
+        assert_eq!(source.iq_format, Some("cu8".to_string()));
+        assert_eq!(source.name, Some("Test Recording".to_string()));
+
+        // Test file source with tilde
+        let toml = r#"
+            file = "~/recordings/flight.iq"
+            iq_format = "cs8"
+            airport = "LFBO"
+        "#;
+        let source: Source =
+            toml::from_str(toml).expect("Failed to parse file TOML with tilde");
+        match source.address {
+            Address::File(path) => {
+                assert_eq!(path.file, "~/recordings/flight.iq");
+            }
+            _ => panic!("Expected Address::File"),
+        }
+        assert_eq!(source.iq_format, Some("cs8".to_string()));
+        assert_eq!(source.airport, Some("LFBO".to_string()));
+
+        // Test file source with cs16 format
+        let toml = r#"
+            file = "/data/recording.iq"
+            iq_format = "cs16"
+            latitude = 43.5993189
+            longitude = 1.4362472
+        "#;
+        let source: Source =
+            toml::from_str(toml).expect("Failed to parse file TOML with cs16");
+        match source.address {
+            Address::File(path) => {
+                assert_eq!(path.file, "/data/recording.iq");
+            }
+            _ => panic!("Expected Address::File"),
+        }
+        assert_eq!(source.iq_format, Some("cs16".to_string()));
+        assert_eq!(source.latitude, Some(43.5993189));
+        assert_eq!(source.longitude, Some(1.4362472));
+
+        // Test file source without iq_format (optional field)
+        let toml = r#"
+            file = "/path/to/file.iq"
+            name = "Default Format"
+        "#;
+        let source: Source = toml::from_str(toml)
+            .expect("Failed to parse file TOML without format");
+        match source.address {
+            Address::File(path) => {
+                assert_eq!(path.file, "/path/to/file.iq");
+            }
+            _ => panic!("Expected Address::File"),
+        }
+        assert_eq!(source.iq_format, None); // Should default to cu8 at runtime
+        assert_eq!(source.name, Some("Default Format".to_string()));
     }
 
     #[test]

@@ -306,6 +306,76 @@ latitude = 51.4706
 longitude = -0.4619
 ```
 
+### IQ File (Offline Decoding)
+
+You can decode pre-recorded IQ files captured from SDR devices. This is useful for:
+- Testing and debugging ADS-B decoding without live hardware
+- Processing historical recordings
+- Offline analysis and development
+
+**Supported IQ formats:**
+
+- **cu8**: Complex unsigned 8-bit (RTL-SDR default format)
+  - Range: 0-255, where 127.5 represents zero
+  - Most common format from `rtl_sdr` command
+- **cs8**: Complex signed 8-bit
+  - Range: -128 to 127
+- **cs16**: Complex signed 16-bit little-endian
+  - Range: -32768 to 32767
+
+**TOML Configuration:**
+
+```toml
+[[sources]]
+file = "/path/to/recording.iq"
+iq_format = "cu8"  # Optional, defaults to "cu8"
+name = "Recording 2024-01-19"
+airport = "LFBO"
+```
+
+With tilde expansion:
+
+```toml
+[[sources]]
+file = "~/adsb-recordings/flight-2024-01-19.iq"
+iq_format = "cu8"
+name = "Historical Flight"
+latitude = 43.5993189
+longitude = 1.4362472
+```
+
+**Command-line Usage:**
+
+```bash
+# With absolute path
+jet1090 "file:///home/user/adsb.iq?format=cu8"
+
+# With tilde expansion
+jet1090 "file://~/recordings/adsb.iq?format=cu8"
+
+# Default format (cu8) - format parameter optional
+jet1090 "file:///path/to/file.iq"
+
+# With location context
+jet1090 "file://~/adsb.iq?format=cu8&LFBO"
+```
+
+!!! tip "Recording IQ files"
+
+    You can create IQ files using the `rtl_sdr` command (from rtl-sdr tools):
+    
+    ```bash
+    # Record 60 seconds at 1090 MHz with 2.4 MS/s sample rate
+    rtl_sdr -f 1090M -s 2.4M -g 49.6 -n 288000000 adsb.iq
+    ```
+    
+    The file will be in cu8 format by default, which is directly compatible with jet1090.
+
+!!! note "Playback Behavior"
+
+    The IQ file is read sequentially from beginning to end. When the file ends, decoding stops. 
+    The playback simulates real-time reception at the configured sample rate (2.4 MS/s for ADS-B).
+
 ### Beast format
 
 External sources can be configured with the `tcp`, `udp` or `websocket` fields.

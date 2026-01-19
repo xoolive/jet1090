@@ -55,6 +55,62 @@ pub async fn receiver(
     }
 }
 
+/// Receiver for IQ file sources that calculates timestamps based on sample position
+/// and a base timestamp (typically file modification time), rather than using current system time.
+///
+/// This allows replaying IQ files with timestamps that reflect when the data was originally recorded,
+/// preserving temporal relationships between messages for proper CPR decoding and analysis.
+pub async fn file_receiver(
+    tx: mpsc::Sender<TimedMessage>,
+    mut source: IqAsyncSource,
+    serial: u64,
+    rate: f64,
+    base_timestamp: f64,
+    chunk_size: u64,
+    name: Option<String>,
+) {
+    let mut sample_count: u64 = 0;
+
+    while let Some(buf) = source.next().await {
+        if let Ok(buf) = buf {
+            let outbuf = magnitude(&buf);
+            let resulting_data = match rate {
+                2.4e6 => demodulate2400(&outbuf).unwrap(),
+                _ => {
+                    panic!("Unsupported sample rate: {}", rate);
+                }
+            };
+            for data in resulting_data {
+                // Calculate timestamp based on sample position and file base time
+                let sample_timestamp =
+                    base_timestamp + (sample_count as f64 / rate);
+
+                let metadata = SensorMetadata {
+                    system_timestamp: sample_timestamp,
+                    gnss_timestamp: None,
+                    nanoseconds: None,
+                    rssi: Some(10. * data.signal_level.log10() as f32),
+                    serial,
+                    name: name.clone(),
+                };
+                let tmsg = TimedMessage {
+                    timestamp: sample_timestamp,
+                    frame: data.msg.to_vec(),
+                    message: None,
+                    metadata: vec![metadata],
+                    decode_time: None,
+                };
+                if tx.send(tmsg).await.is_err() {
+                    break;
+                }
+            }
+
+            // Increment sample count by the chunk size
+            sample_count += chunk_size;
+        }
+    }
+}
+
 pub fn magnitude(data: &[Complex<f32>]) -> MagnitudeBuffer {
     let mut outbuf = MagnitudeBuffer::default();
     for b in data {

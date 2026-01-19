@@ -29,11 +29,11 @@ pub fn build_table(frame: &mut Frame, app: &mut Jet1090) {
     let search_query = app.search_query.to_lowercase().replace("-", "");
     let search_regex =
         Regex::new(&search_query).unwrap_or_else(|_| Regex::new("").unwrap());
-    let filtered_states =
-        states
-            .values()
-            .filter(|sv| {
-                (sv.cur.count > 1)
+    let filtered_states = states
+        .values()
+        .filter(|sv| {
+            (sv.cur.count > 1)
+                    // Only show aircraft seen in the last 30 seconds
                     && (now as i64 - sv.cur.lastseen as i64) < 30
                     && (sv.cur.callsign.as_ref().is_some_and(|s| {
                         search_regex.is_match(&s.to_lowercase())
@@ -51,8 +51,8 @@ pub fn build_table(frame: &mut Frame, app: &mut Jet1090) {
                                 search_regex.is_match(&n.to_lowercase())
                             })
                         }))
-            })
-            .collect::<Vec<&StateVectors>>();
+        })
+        .collect::<Vec<&StateVectors>>();
 
     app.items = filtered_states
         .iter()
@@ -203,6 +203,7 @@ pub fn build_table(frame: &mut Frame, app: &mut Jet1090) {
     };
     let rows = sorted_elts
         .iter()
+        // Only show aircraft seen in the last 30 seconds
         .filter(|sv| (now as i64 - sv.cur.lastseen as i64) < 30)
         .enumerate()
         .map(|(i, sv)| {
