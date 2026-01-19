@@ -11,14 +11,14 @@ use rs1090::source::sero;
 #[cfg(feature = "ssh")]
 use rs1090::source::ssh::{TunnelledTcp, TunnelledWebsocket};
 
-#[cfg(feature = "sdr")]
-use desperado::IqAsyncSource;
 #[cfg(feature = "pluto")]
 use desperado::pluto::PlutoConfig;
 #[cfg(feature = "rtlsdr")]
 use desperado::rtlsdr::{DeviceSelector, RtlSdrConfig};
 #[cfg(feature = "soapy")]
 use desperado::soapy::SoapyConfig;
+#[cfg(feature = "sdr")]
+use desperado::IqAsyncSource;
 #[cfg(feature = "sdr")]
 use desperado::{DeviceConfig, Gain};
 use serde::{Deserialize, Serialize};
