@@ -8,14 +8,15 @@ mod snapshot;
 mod source;
 mod table;
 mod tui;
+mod util;
 mod web;
 
 use crate::tui::Event;
+use crate::util::expanduser;
 use crate::web::serve_web_api;
 use clap::{Command, CommandFactory, Parser, ValueHint};
 use clap_complete::{generate, Generator};
 use crossterm::event::KeyCode;
-use desperado::expanduser;
 use ratatui::widgets::*;
 use redis::AsyncCommands;
 use rs1090::data::aircraft;
