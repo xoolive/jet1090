@@ -3,11 +3,13 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 use regex::Regex;
 use rs1090::data::patterns::aircraft_information;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use style::palette::tailwind;
+use tokio::sync::RwLockReadGuard;
 
-use crate::snapshot::Snapshot;
-use crate::{Jet1090, SortKey};
+use crate::snapshot::{Snapshot, StateVectors};
+use crate::{Jet1090, SharedState, SortKey};
 
 const INFO_TEXT: &str =
     "(Esc/Q) quit | (↑/K) up | (↓/J) down | (⤒/G) top | (/) search";
@@ -15,16 +17,16 @@ const INFO_TEXT: &str =
 /**
  * Rendering of the table in interactive mode
  */
-pub fn build_table(frame: &mut Frame, app: &mut Jet1090) {
+pub fn build_table(
+    frame: &mut Frame,
+    app: &mut Jet1090,
+    _shared: &SharedState,
+    state_vectors: &RwLockReadGuard<'_, BTreeMap<String, StateVectors>>,
+) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("SystemTime before unix epoch")
         .as_secs();
-
-    // Update airport names
-    app.receivers();
-
-    let states = &app.state_vectors;
 
     // Get the interactive expire threshold (0 means no expiration)
     let interactive_expire = app.interactive_expire;
@@ -33,7 +35,7 @@ pub fn build_table(frame: &mut Frame, app: &mut Jet1090) {
     let search_query = app.search_query.to_lowercase().replace("-", "");
     let search_regex =
         Regex::new(&search_query).unwrap_or_else(|_| Regex::new("").unwrap());
-    let filtered_states = states
+    let filtered_states = state_vectors
         .values()
         .filter(|sv| {
             (sv.cur.count > 1)

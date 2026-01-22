@@ -9,9 +9,6 @@ use rs1090::decode::cpr::AircraftState;
 use rs1090::decode::{IdentityCode, SensorMetadata, ICAO};
 use rs1090::prelude::*;
 use serde::Serialize;
-use tokio::sync::Mutex;
-
-use crate::Jet1090;
 
 /**
  * A state vector with the most up-to-date information about an aircraft
@@ -148,7 +145,7 @@ fn icao24(msg: &Message) -> Option<String> {
 }
 
 pub async fn update_snapshot(
-    states: &Mutex<Jet1090>,
+    shared: &crate::SharedState,
     msg: &mut TimedMessage,
     aircraftdb: &BTreeMap<String, Aircraft>,
     cpr_aircraft: &BTreeMap<ICAO, AircraftState>,
@@ -161,7 +158,7 @@ pub async fn update_snapshot(
     } = msg
     {
         if let Some(icao24) = icao24(message) {
-            let states = &mut states.lock().await.state_vectors;
+            let mut states = shared.state_vectors.write().await;
             let aircraft =
                 states
                     .entry(icao24.to_string())
@@ -357,7 +354,7 @@ pub async fn update_snapshot(
 }
 
 pub async fn store_history(
-    states: &Mutex<Jet1090>,
+    shared: &crate::SharedState,
     msg: TimedMessage,
     aircraftdb: &BTreeMap<String, Aircraft>,
 ) {
@@ -370,7 +367,7 @@ pub async fn store_history(
     } = msg
     {
         if let Some(icao24) = icao24(&message) {
-            let states = &mut states.lock().await.state_vectors;
+            let mut states = shared.state_vectors.write().await;
             let aircraft =
                 states
                     .entry(icao24.to_string())

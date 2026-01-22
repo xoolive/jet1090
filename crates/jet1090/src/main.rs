@@ -29,11 +29,12 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -362,14 +363,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sensors.insert(sensor.serial, sensor);
         }
     }
+
+    // Create shared state accessible by all tasks
+    let shared = Arc::new(SharedState::new(sensors));
+    let shared_dec = shared.clone();
+    let shared_web = shared.clone();
+    let shared_exp = shared.clone();
+
+    // Create TUI-specific state (only for interactive mode)
     let app_tui = Arc::new(Mutex::new(Jet1090 {
-        sensors,
         items: Vec::new(),
         state: TableState::default().with_selected(0),
         scroll_state: ScrollbarState::new(0),
-        should_quit: false,
-        should_clear: false,
-        state_vectors: BTreeMap::new(),
         sort_key: SortKey::default(),
         sort_asc: false,
         width,
@@ -378,25 +383,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         interactive_expire: options.interactive_expire.unwrap_or(30),
         flags: options.flags,
     }));
-    let app_dec = app_tui.clone();
-    let app_web = app_tui.clone();
-    let app_exp = app_tui.clone();
 
     if let Some(mut terminal) = terminal {
+        let app_tui_task = app_tui.clone();
+        let shared_tui = shared.clone();
         tokio::spawn(async move {
             loop {
                 if let Ok(event) = events.next().await {
-                    update(&mut app_tui.lock().await, event)?;
+                    update(&mut app_tui_task.lock().await, event, &shared_tui)?;
                 }
-                let mut app = app_tui.lock().await;
-                if app.should_quit {
+                let mut app = app_tui_task.lock().await;
+                if shared_tui.should_quit.load(Ordering::Relaxed) {
                     break;
                 }
-                if app.should_clear {
+                if shared_tui.should_clear.swap(false, Ordering::Relaxed) {
                     terminal.clear()?;
-                    app.should_clear = false;
                 }
-                terminal.draw(|frame| table::build_table(frame, &mut app))?;
+                // Acquire read lock on state_vectors before drawing
+                // This allows concurrent reads by TUI and Web API
+                let state_vectors = shared_tui.state_vectors.read().await;
+                terminal.draw(|frame| {
+                    table::build_table(
+                        frame,
+                        &mut app,
+                        &shared_tui,
+                        &state_vectors,
+                    )
+                })?;
+                drop(state_vectors); // Release read lock
             }
             tui::restore()
         });
@@ -405,12 +419,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(minutes) = options.history_expire {
         // No need to start this task if we don't store history
         if minutes > 0 {
-            tokio::spawn(expire_aircraft(app_exp.clone(), minutes));
+            tokio::spawn(expire_aircraft(shared_exp.clone(), minutes));
         }
     }
 
     if let Some(port) = options.serve_port {
-        tokio::spawn(serve_web_api(app_web, port));
+        tokio::spawn(serve_web_api(shared_web, port));
     }
 
     // Spawn periodic file flush task to ensure timely writes
@@ -468,7 +482,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // place. A better workaround would be to condition that clear to
             // the first message received from rtlsdr.
 
-            app_dec.lock().await.should_clear = true;
+            shared_dec.should_clear.store(true, Ordering::Relaxed);
             first_msg = false;
         }
 
@@ -548,8 +562,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .finish();
         }
 
-        snapshot::update_snapshot(&app_dec, &mut msg, &aircraftdb, &aircraft)
-            .await;
+        snapshot::update_snapshot(
+            &shared_dec,
+            &mut msg,
+            &aircraftdb,
+            &aircraft,
+        )
+        .await;
 
         let is_in = filters::Filters::is_in(&filters, &msg);
 
@@ -574,41 +593,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(0) => (),
             _ => {
                 if is_in {
-                    snapshot::store_history(&app_dec, msg, &aircraftdb).await
+                    snapshot::store_history(&shared_dec, msg, &aircraftdb).await
                 }
             }
         }
 
-        if app_dec.lock().await.should_quit {
+        if shared_dec.should_quit.load(Ordering::Relaxed) {
             break;
         }
     }
     Ok(())
 }
 
-async fn expire_aircraft(app_expire: Arc<Mutex<Jet1090>>, minutes: u64) {
+async fn expire_aircraft(shared: Arc<SharedState>, minutes: u64) {
     loop {
         sleep(Duration::from_secs(60)).await;
         {
-            let mut app = app_expire.lock().await;
+            let mut state_vectors = shared.state_vectors.write().await;
             let now = SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("SystemTime before unix epoch")
                 .as_secs();
 
-            let remove_keys = app
-                .state_vectors
+            let remove_keys = state_vectors
                 .iter()
                 .filter(|(_key, value)| now > value.cur.lastseen + minutes * 60)
                 .map(|(key, _)| key.to_string())
                 .collect::<Vec<String>>();
 
             for key in remove_keys {
-                app.state_vectors.remove(&key);
+                state_vectors.remove(&key);
             }
 
-            let _ = app
-                .state_vectors
+            let _ = state_vectors
                 .iter_mut()
                 .map(|(_key, value)| {
                     value.hist.retain(|elt| {
@@ -619,15 +636,13 @@ async fn expire_aircraft(app_expire: Arc<Mutex<Jet1090>>, minutes: u64) {
         }
     }
 }
+/// Shared application state split into components to reduce lock contention
 #[derive(Debug, Default)]
 pub struct Jet1090 {
-    sensors: BTreeMap<u64, Sensor>,
+    // TUI-specific state (only accessed by TUI task, kept in Mutex)
     state: TableState,
     items: Vec<String>,
     scroll_state: ScrollbarState,
-    should_quit: bool,
-    should_clear: bool,
-    state_vectors: BTreeMap<String, snapshot::StateVectors>,
     sort_key: SortKey,
     sort_asc: bool,
     width: u16,
@@ -635,6 +650,30 @@ pub struct Jet1090 {
     search_query: String,
     interactive_expire: u64,
     flags: bool,
+}
+
+/// Shared state that multiple tasks need to access
+#[derive(Debug)]
+pub struct SharedState {
+    /// Aircraft state vectors - read-heavy (RwLock for concurrent reads)
+    state_vectors: Arc<RwLock<BTreeMap<String, snapshot::StateVectors>>>,
+    /// Sensor information - read-only after initialization
+    sensors: BTreeMap<u64, Sensor>,
+    /// Quit flag - lock-free atomic
+    should_quit: Arc<AtomicBool>,
+    /// Clear screen flag - lock-free atomic
+    should_clear: Arc<AtomicBool>,
+}
+
+impl SharedState {
+    fn new(sensors: BTreeMap<u64, Sensor>) -> Self {
+        Self {
+            state_vectors: Arc::new(RwLock::new(BTreeMap::new())),
+            sensors,
+            should_quit: Arc::new(AtomicBool::new(false)),
+            should_clear: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -651,6 +690,7 @@ pub enum SortKey {
 fn update(
     jet1090: &mut tokio::sync::MutexGuard<Jet1090>,
     event: Event,
+    shared: &SharedState,
 ) -> std::io::Result<()> {
     match event {
         Event::Key(key) => {
@@ -669,7 +709,9 @@ fn update(
                 (false, Char('j')) | (_, Down) => jet1090.next(),
                 (false, Char('k')) | (_, Up) => jet1090.previous(),
                 (false, Char('g')) | (_, PageUp) | (_, Home) => jet1090.home(),
-                (false, Char('q')) | (false, Esc) => jet1090.should_quit = true,
+                (false, Char('q')) | (false, Esc) => {
+                    shared.should_quit.store(true, Ordering::Relaxed)
+                }
                 (false, Char('a')) => jet1090.sort_key = SortKey::ALTITUDE,
                 (false, Char('c')) => jet1090.sort_key = SortKey::CALLSIGN,
                 (false, Char('v')) => jet1090.sort_key = SortKey::VRATE,
@@ -688,27 +730,6 @@ fn update(
 }
 
 impl Jet1090 {
-    pub fn receivers(&mut self) {
-        for sensor in self.sensors.values_mut() {
-            sensor.aircraft_count = 0;
-        }
-        for vector in self.state_vectors.values_mut() {
-            for sensor in &vector.cur.metadata {
-                if let Some(src) = self.sensors.get_mut(&sensor.serial) {
-                    src.aircraft_count += 1;
-                    src.last_timestamp = vector.cur.lastseen
-                }
-            }
-        }
-    }
-    pub fn keys(&self) -> Result<impl warp::Reply, std::convert::Infallible> {
-        let keys: Vec<_> = self
-            .state_vectors
-            .keys()
-            .map(|key| key.to_string())
-            .collect();
-        Ok(warp::reply::json(&keys))
-    }
     pub fn next(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {

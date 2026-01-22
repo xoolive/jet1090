@@ -1,19 +1,15 @@
 use rs1090::data::airports::{Airport, AIRPORTS};
 
-/**
- * Information returned on a REST API
- */
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use warp::http::StatusCode;
 use warp::reject::Rejection;
 use warp::reply::Reply;
 use warp::Filter;
 
 use crate::snapshot::Snapshot;
-use crate::Jet1090;
+use crate::SharedState;
 
 /// Information required to ask for a trajectory
 #[derive(Serialize, Deserialize)]
@@ -37,19 +33,21 @@ struct ErrorMessage {
 
 /// Returns all the ICAO 24-bit addresses of aircraft seen by jet1090
 pub async fn icao24(
-    app: &Arc<Mutex<Jet1090>>,
+    shared: &Arc<SharedState>,
 ) -> Result<warp::reply::Json, Infallible> {
-    let app = app.lock().await;
-    Ok::<_, Infallible>(warp::reply::json(&app.items))
+    let state_vectors = shared.state_vectors.read().await;
+    let keys: Vec<_> =
+        state_vectors.keys().map(|key| key.to_string()).collect();
+    Ok::<_, Infallible>(warp::reply::json(&keys))
 }
 
 /// Returns all state vectors without any history information
 pub async fn all(
-    app: &Arc<Mutex<Jet1090>>,
+    shared: &Arc<SharedState>,
 ) -> Result<warp::reply::Json, Infallible> {
-    let app = app.lock().await;
+    let state_vectors = shared.state_vectors.read().await;
     Ok::<_, Infallible>(warp::reply::json(
-        &app.state_vectors
+        &state_vectors
             .values()
             .map(|sv| &sv.cur)
             .collect::<Vec<&Snapshot>>(),
@@ -58,11 +56,11 @@ pub async fn all(
 
 /// Returns the trajectory of a given aircraft matching the REST query
 pub async fn track(
-    app: &Arc<Mutex<Jet1090>>,
+    shared: &Arc<SharedState>,
     q: TrackQuery,
 ) -> Result<warp::reply::Json, Infallible> {
-    let app = app.lock().await;
-    let res = app.state_vectors.get(&q.icao24).map(|sv| &sv.hist);
+    let state_vectors = shared.state_vectors.read().await;
+    let res = state_vectors.get(&q.icao24).map(|sv| &sv.hist);
     let res = match q.since {
         Some(since) => {
             let res = res.map(|res| {
@@ -81,10 +79,9 @@ pub async fn track(
 
 /// Returns decoding information about all sensors
 pub async fn sensors(
-    app: &Arc<Mutex<Jet1090>>,
+    shared: &Arc<SharedState>,
 ) -> Result<warp::reply::Json, Infallible> {
-    let app = app.lock().await;
-    Ok::<_, Infallible>(warp::reply::json(&app.sensors))
+    Ok::<_, Infallible>(warp::reply::json(&shared.sensors))
 }
 
 /// Returns a list of poential airports matching the query string
@@ -138,7 +135,7 @@ pub async fn handle_rejection(
     Ok(warp::reply::with_status(json, code))
 }
 
-pub async fn serve_web_api(app: Arc<Mutex<Jet1090>>, port: u16) {
+pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
     let home = warp::path::end().and_then(|| async {
         Ok::<_, Infallible>(warp::reply::html(
             "Welcome to the jet1090 REST API!<br>\
@@ -153,30 +150,32 @@ pub async fn serve_web_api(app: Arc<Mutex<Jet1090>>, port: u16) {
         ))
     });
 
-    let app_home = app.clone();
+    let shared_home = shared.clone();
     let icao24 = warp::path::end()
-        .and(warp::any().map(move || app_home.clone()))
-        .and_then(|app: Arc<Mutex<Jet1090>>| async move { icao24(&app).await });
+        .and(warp::any().map(move || shared_home.clone()))
+        .and_then(
+            |shared: Arc<SharedState>| async move { icao24(&shared).await },
+        );
 
-    let app_all = app.clone();
+    let shared_all = shared.clone();
     let all = warp::path("all")
-        .and(warp::any().map(move || app_all.clone()))
-        .and_then(|app: Arc<Mutex<Jet1090>>| async move { all(&app).await });
+        .and(warp::any().map(move || shared_all.clone()))
+        .and_then(|shared: Arc<SharedState>| async move { all(&shared).await });
 
-    let app_track = app.clone();
+    let shared_track = shared.clone();
     let track = warp::get()
         .and(warp::path("track"))
-        .and(warp::any().map(move || app_track.clone()))
+        .and(warp::any().map(move || shared_track.clone()))
         .and(warp::query::<TrackQuery>())
-        .and_then(|app: Arc<Mutex<Jet1090>>, q: TrackQuery| async move {
-            track(&app, q).await
+        .and_then(|shared: Arc<SharedState>, q: TrackQuery| async move {
+            track(&shared, q).await
         });
 
-    let app_sensors = app.clone();
+    let shared_sensors = shared.clone();
     let sensors = warp::path("sensors")
-        .and(warp::any().map(move || app_sensors.clone()))
+        .and(warp::any().map(move || shared_sensors.clone()))
         .and_then(
-            |app: Arc<Mutex<Jet1090>>| async move { sensors(&app).await },
+            |shared: Arc<SharedState>| async move { sensors(&shared).await },
         );
 
     let airports = warp::path("airports")
