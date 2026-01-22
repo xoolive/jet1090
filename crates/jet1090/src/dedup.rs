@@ -40,12 +40,17 @@ pub async fn deduplicate_messages(
         }
 
         // Check and handle expired entries
-        while let Some(Reverse((curtime, frame))) = expiration_heap.pop() {
-            if curtime > timestamp_ms {
-                // If not expired, push it back and stop processing
-                expiration_heap.push(Reverse((curtime, frame)));
+        // Use peek() to avoid pop-push cycle that breaks with backwards timestamps
+        while let Some(Reverse((next_expiration, _))) = expiration_heap.peek() {
+            let next_expiration = *next_expiration;
+
+            // If not expired yet, stop processing
+            if next_expiration > timestamp_ms {
                 break;
             }
+
+            // Pop the expired entry and process it
+            let Reverse((_, frame)) = expiration_heap.pop().unwrap();
 
             // Otherwise clear the cache and process the deduplicated message
             if let Some(mut entries) = cache.remove(&frame) {
