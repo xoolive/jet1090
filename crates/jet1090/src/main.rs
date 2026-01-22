@@ -307,7 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         aircraft_filter: options.aircraft_filter,
     };
 
-    let mut file = if let Some(output_path) = options.output {
+    let file = if let Some(output_path) = options.output {
         let output_path = expanduser(PathBuf::from(output_path));
         Some(
             fs::OpenOptions::new()
@@ -319,6 +319,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+
+    // Wrap file in Arc<Mutex> for sharing with flush task
+    let file = Arc::new(Mutex::new(file));
 
     let aircraftdb = aircraft::aircraft().await;
 
@@ -408,6 +411,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(port) = options.serve_port {
         tokio::spawn(serve_web_api(app_web, port));
+    }
+
+    // Spawn periodic file flush task to ensure timely writes
+    // Flushes every 1 second to prevent 15-30s delays from mutex contention
+    if file.lock().await.is_some() {
+        let file_flush = file.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(1)).await;
+                if let Some(f) = file_flush.lock().await.as_mut() {
+                    let _ = f.flush().await;
+                }
+            }
+        });
     }
 
     // I am not sure whether this size calibration is relevant, but let's try...
@@ -542,9 +559,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("{json}");
                 }
 
-                if let Some(file) = &mut file {
-                    file.write_all(json.as_bytes()).await?;
-                    file.write_all("\n".as_bytes()).await?;
+                if let Some(f) = file.lock().await.as_mut() {
+                    f.write_all(json.as_bytes()).await?;
+                    f.write_all("\n".as_bytes()).await?;
                 }
 
                 if let Some(c) = &mut redis_connect {
