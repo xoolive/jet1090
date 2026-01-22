@@ -23,6 +23,12 @@ pub async fn receiver(
 ) {
     while let Some(buf) = source.next().await {
         if let Ok(buf) = buf {
+            // Timestamp buffer arrival to calculate per-message reception times.
+            // Ideally timestamping should occur at hardware read (in desperado), but this
+            // approach adds only ~20-100μs delay vs 54ms error from timestamping after demod.
+            let buffer_arrival_ns = now_in_ns();
+            let buffer_arrival_time = buffer_arrival_ns as f64 * 1e-9;
+
             let outbuf = magnitude(&buf);
             let resulting_data = match rate {
                 2.4e6 => demodulate2400(&outbuf).unwrap(),
@@ -31,7 +37,13 @@ pub async fn receiver(
                 }
             };
             for data in resulting_data {
-                let system_timestamp = now_in_ns() as f64 * 1e-9;
+                // Calculate when this message was received based on its sample position.
+                // Earlier samples (position 0) are older, so subtract offset from buffer arrival.
+                // Note: Uses nominal sample rate; SDR clock drift (±1-2ppm) accumulates over time.
+                let sample_offset_seconds = data.sample_position as f64 / rate;
+                let system_timestamp =
+                    buffer_arrival_time - sample_offset_seconds;
+
                 let metadata = SensorMetadata {
                     system_timestamp,
                     gnss_timestamp: None,
@@ -453,6 +465,8 @@ pub struct ModeSMessage {
     signal_level: f64,
     /// Scoring from scoreModesMessage, if used
     score: i32,
+    /// Sample position in buffer where this message was found
+    sample_position: usize,
 }
 
 pub fn demodulate2400(
@@ -497,6 +511,7 @@ pub fn demodulate2400(
                 msg: [0_u8; MODES_LONG_MSG_BYTES],
                 signal_level: 0.,
                 score: -2,
+                sample_position: j,
             };
 
             let mut msg: [u8; MODES_LONG_MSG_BYTES] =
