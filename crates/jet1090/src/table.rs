@@ -2,6 +2,7 @@ use chrono::prelude::*;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use regex::Regex;
+use rs1090::data::patterns::aircraft_information;
 use std::time::{SystemTime, UNIX_EPOCH};
 use style::palette::tailwind;
 
@@ -177,8 +178,12 @@ pub fn build_table(frame: &mut Frame, app: &mut Jet1090) {
                 ]
             }
             _ => {
-                vec![
-                    ICAO24,
+                let mut cols = vec![ICAO24];
+                // Insert FLAG before TAIL only when flags are enabled
+                if app.flags {
+                    cols.push(FLAG);
+                }
+                cols.extend([
                     TAIL,
                     CALLSIGN,
                     TYPECODE,
@@ -200,7 +205,8 @@ pub fn build_table(frame: &mut Frame, app: &mut Jet1090) {
                     REFERENCE,
                     LAST,
                     FIRST,
-                ]
+                ]);
+                cols
             }
         }
     };
@@ -345,6 +351,7 @@ trait Render {
 #[allow(clippy::upper_case_acronyms)]
 enum ColumnRender {
     ICAO24,
+    FLAG,
     TAIL,
     CALLSIGN,
     TYPECODE,
@@ -372,6 +379,14 @@ impl Render for ColumnRender {
     fn cell(&self, s: &Snapshot, now: u64) -> String {
         match self {
             Self::ICAO24 => s.icao24.to_string(),
+            Self::FLAG => {
+                // Get flag emoji from ICAO24 address
+                if let Ok(info) = aircraft_information(&s.icao24, None) {
+                    info.flag.unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            }
             Self::TAIL => s.registration.to_owned().unwrap_or("".to_string()),
             Self::CALLSIGN => s.callsign.to_owned().unwrap_or("".to_string()),
             Self::TYPECODE => s.typecode.to_owned().unwrap_or("".to_string()),
@@ -456,6 +471,7 @@ impl Render for ColumnRender {
     fn header(&self, sort_key: &SortKey) -> Cell<'_> {
         match self {
             ColumnRender::ICAO24 => Cell::from("icao24".to_string()),
+            ColumnRender::FLAG => Cell::from("".to_string()), // No header for flag column
             ColumnRender::TAIL => Cell::from("tail".to_string()),
             ColumnRender::CALLSIGN => {
                 let mut c = Cell::from("callsign".to_string());
@@ -512,6 +528,7 @@ impl Render for ColumnRender {
     fn constraint(&self) -> Constraint {
         match self {
             ColumnRender::ICAO24 => Constraint::Length(6),
+            ColumnRender::FLAG => Constraint::Length(2),
             ColumnRender::TAIL => Constraint::Length(8),
             ColumnRender::CALLSIGN => Constraint::Length(8),
             ColumnRender::TYPECODE => Constraint::Length(4),

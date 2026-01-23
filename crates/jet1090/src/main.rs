@@ -59,6 +59,11 @@ struct Options {
     #[serde(default)]
     interactive: bool,
 
+    /// Show country flags in TUI display (only visible when width > 130)
+    #[arg(long, default_value = "false")]
+    #[serde(default)]
+    flags: bool,
+
     /// Port for the API endpoint (on 0.0.0.0)
     #[arg(long, default_value=None)]
     serve_port: Option<u16>,
@@ -201,6 +206,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if cli_options.interactive {
         options.interactive = true;
+    }
+    if cli_options.flags {
+        options.flags = true;
     }
     if cli_options.serve_port.is_some() {
         options.serve_port = cli_options.serve_port;
@@ -376,6 +384,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         is_search_mode: false,
         search_query: "".to_string(),
         interactive_expire: options.interactive_expire.unwrap_or(30),
+        flags: options.flags,
     }));
     let app_dec = app_tui.clone();
     let app_web = app_tui.clone();
@@ -619,6 +628,7 @@ pub struct Jet1090 {
     is_search_mode: bool,
     search_query: String,
     interactive_expire: u64,
+    flags: bool,
 }
 
 #[derive(Debug, Default, PartialEq)]
