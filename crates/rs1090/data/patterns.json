@@ -2305,9 +2305,10 @@
     {
       "pattern": "^9H-",
       "start": "0x4d2000",
-      "end": "0x4d23ff",
+      "end": "0x4d2fff",
       "country": "Malta",
-      "flag": "\ud83c\uddf2\ud83c\uddf9"
+      "flag": "\ud83c\uddf2\ud83c\uddf9",
+      "comment": "Expanded from 0x4d23ff post-2021 for Malta Air, Wizz Air Malta, and Eurowings Europe fleets"
     },
     {
       "pattern": "^9J-",
