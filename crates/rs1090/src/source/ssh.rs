@@ -1,4 +1,3 @@
-use log::{info, warn};
 use makiko::{
     ChannelConfig, Client, ClientConfig, ClientReceiver, Privkey,
     TunnelReceiver, TunnelStream,
@@ -15,6 +14,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     process::{ChildStdin, ChildStdout, Command},
 };
+use tracing::{info, warn};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
