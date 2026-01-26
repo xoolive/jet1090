@@ -1318,7 +1318,6 @@ checksum = "3f68a0d2437e0caae2a1fa10ddeae9a62644520036a64ec70cffb586c6ff1d2a"
 dependencies = [
  "bitvec",
  "deku_derive",
- "log",
  "no_std_io2",
  "rustversion",
 ]
