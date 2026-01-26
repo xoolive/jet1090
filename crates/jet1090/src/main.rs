@@ -118,6 +118,18 @@ struct Options {
     #[arg(long, default_value = "450")]
     deduplication: Option<u32>,
 
+    /// Reorder window for emission buffer to handle out-of-order timestamps (time in ms)
+    /// This is useful when using UDP sources that batch timestamps, causing messages to
+    /// expire from deduplication cache in non-chronological order. Recommended: 200ms for
+    /// UDP sources, 0 to disable reordering (lower latency but may have backwards timestamps).
+    #[arg(long, default_value = "200")]
+    reorder_window: Option<u32>,
+
+    /// Disable deduplication (messages are passed through without merging)
+    #[arg(long, default_value=None)]
+    #[serde(default)]
+    no_deduplication: bool,
+
     /// Include decoding time statistics in the output
     #[arg(long)]
     stats: Option<bool>,
@@ -252,6 +264,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if cli_options.deduplication.is_some() {
         options.deduplication = cli_options.deduplication;
+    }
+    if cli_options.reorder_window.is_some() {
+        options.reorder_window = cli_options.reorder_window;
     }
     if options.stats.unwrap_or(false) {
         serialize_config(true);
@@ -444,7 +459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // I am not sure whether this size calibration is relevant, but let's try...
     // adding one in order to avoid the stupid error when you set a size = 0
     let multiplier = references.len();
-    let (tx, rx) = tokio::sync::mpsc::channel(100 * multiplier + 1);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(100 * multiplier + 1);
     let (tx_dedup, mut rx_dedup) =
         tokio::sync::mpsc::channel(100 * multiplier + 1);
 
@@ -455,14 +470,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         source.receiver(tx_copy, serial, source_name);
     }
 
-    tokio::spawn(async move {
-        dedup::deduplicate_messages(
-            rx,
-            tx_dedup,
-            options.deduplication.unwrap_or(450),
-        )
-        .await;
-    });
+    // Conditionally spawn deduplication task
+    if !options.no_deduplication {
+        tokio::spawn(async move {
+            dedup::deduplicate_messages(
+                rx,
+                tx_dedup,
+                options.deduplication.unwrap_or(450),
+                options.reorder_window.unwrap_or(200),
+            )
+            .await;
+        });
+    } else {
+        // Pass through without deduplication, but still decode messages
+        tokio::spawn(async move {
+            while let Some(mut msg) = rx.recv().await {
+                let start = SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("SystemTime before unix epoch")
+                    .as_secs_f64();
+
+                if let Ok((_, decoded)) = Message::from_bytes((&msg.frame, 0)) {
+                    msg.decode_time = Some(
+                        SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("SystemTime before unix epoch")
+                            .as_secs_f64()
+                            - start,
+                    );
+                    msg.message = Some(decoded);
+
+                    if tx_dedup.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     // If we choose to update the reference (only useful for surface positions)
     // then we define the callback (for now, if the altitude is below 5000ft)

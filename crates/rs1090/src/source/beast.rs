@@ -276,9 +276,13 @@ fn process_radarcape(
 
     let system_timestamp = now_in_ns() as f64 * 1e-9;
 
-    let gnss_timestamp = match (system_timestamp - timestamp_in_s).abs() {
-        value if value < 3600. => Some(timestamp_in_s),
-        _ => None,
+    // Validate Beast GNSS timestamp: if it differs from system time by >1 hour, it's invalid
+    let gnss_timestamp_valid =
+        (system_timestamp - timestamp_in_s).abs() < 3600.;
+    let gnss_timestamp = if gnss_timestamp_valid {
+        Some(timestamp_in_s)
+    } else {
+        None
     };
 
     let rssi = if msg[8] == 0xff { None } else { Some(msg[8]) };
@@ -296,7 +300,12 @@ fn process_radarcape(
     };
 
     TimedMessage {
-        timestamp: metadata.system_timestamp,
+        // Use Beast GNSS timestamp if valid, fall back to system timestamp
+        timestamp: if gnss_timestamp_valid {
+            timestamp_in_s
+        } else {
+            system_timestamp
+        },
         frame: msg[9..].to_vec(),
         message: None,
         metadata: vec![metadata],
