@@ -198,6 +198,9 @@ pub struct Source {
     /// Gain setting for SDR devices (RTL-SDR default: 49.6, PlutoSDR default: 73.0)
     #[cfg(feature = "sdr")]
     pub gain: Option<f64>,
+    /// Sample rate in Hz (2.4e6 or 6.0e6, default: 2.4e6)
+    #[cfg(feature = "sdr")]
+    pub sample_rate: Option<f64>,
     /// Enable bias-tee to power external LNA (RTL-SDR and SoapySDR, default: false)
     #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
     pub bias_tee: Option<bool>,
@@ -226,6 +229,8 @@ impl<'de> Deserialize<'de> for Source {
             altitude: Option<f64>,
             #[cfg(feature = "sdr")]
             gain: Option<f64>,
+            #[cfg(feature = "sdr")]
+            sample_rate: Option<f64>,
             #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
             bias_tee: Option<bool>,
             #[cfg(feature = "sdr")]
@@ -261,6 +266,8 @@ impl<'de> Deserialize<'de> for Source {
             altitude: helper.altitude,
             #[cfg(feature = "sdr")]
             gain: helper.gain,
+            #[cfg(feature = "sdr")]
+            sample_rate: helper.sample_rate,
             #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
             bias_tee: helper.bias_tee,
             #[cfg(feature = "sdr")]
@@ -429,6 +436,8 @@ impl FromStr for Source {
             altitude: None,
             #[cfg(feature = "sdr")]
             gain: None,
+            #[cfg(feature = "sdr")]
+            sample_rate: None,
             #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
             bias_tee: None,
             #[cfg(feature = "sdr")]
@@ -573,6 +582,9 @@ impl Source {
                 // Use gain from config or default to 49.6 for RTL-SDR
                 let gain_value = self.gain.unwrap_or(RTLSDR_GAIN);
 
+                // Use sample_rate from config or default to 2.4 MS/s
+                let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
+
                 // Use bias_tee from config or default to false
                 let bias_tee_enabled = self.bias_tee.unwrap_or(false);
 
@@ -580,7 +592,7 @@ impl Source {
                     let rtlsdr_config = RtlSdrConfig {
                         device,
                         center_freq: MODES_FREQ as u32,
-                        sample_rate: RATE_2_4M as u32,
+                        sample_rate: sample_rate as u32,
                         gain: Gain::Manual(gain_value),
                         bias_tee: bias_tee_enabled,
                     };
@@ -588,7 +600,8 @@ impl Source {
                     let source = IqAsyncSource::from_device_config(&config)
                         .await
                         .expect("Failed to create RTL-SDR source");
-                    iqread::receiver(tx, source, serial, RATE_2_4M, name).await
+                    iqread::receiver(tx, source, serial, sample_rate, name)
+                        .await
                 });
             }
             #[cfg(feature = "pluto")]
@@ -604,18 +617,22 @@ impl Source {
                 // Use gain from config or default to 50.0 for PlutoSDR
                 let gain_value = self.gain.unwrap_or(PLUTO_GAIN);
 
+                // Use sample_rate from config or default to 2.4 MS/s
+                let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
+
                 tokio::spawn(async move {
                     let pluto_config = PlutoConfig {
                         uri,
                         center_freq: MODES_FREQ as i64,
-                        sample_rate: RATE_2_4M as i64,
+                        sample_rate: sample_rate as i64,
                         gain: Gain::Manual(gain_value),
                     };
                     let config = DeviceConfig::Pluto(pluto_config);
                     let source = IqAsyncSource::from_device_config(&config)
                         .await
                         .expect("Failed to create PlutoSDR source");
-                    iqread::receiver(tx, source, serial, RATE_2_4M, name).await
+                    iqread::receiver(tx, source, serial, sample_rate, name)
+                        .await
                 });
             }
             #[cfg(feature = "soapy")]
@@ -626,11 +643,14 @@ impl Source {
                 let gain_value = self.gain.unwrap_or(RTLSDR_GAIN);
                 let bias_tee_enabled = self.bias_tee.unwrap_or(false);
 
+                // Use sample_rate from config or default to 2.4 MS/s
+                let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
+
                 tokio::spawn(async move {
                     let soapy_config = SoapyConfig {
                         args,
                         center_freq: MODES_FREQ,
-                        sample_rate: RATE_2_4M,
+                        sample_rate,
                         channel: 0,
                         gain: Gain::Manual(gain_value),
                         gain_element: "TUNER".to_string(),
@@ -640,7 +660,8 @@ impl Source {
                     let source = IqAsyncSource::from_device_config(&config)
                         .await
                         .expect("Failed to create SoapySDR source");
-                    iqread::receiver(tx, source, serial, RATE_2_4M, name).await
+                    iqread::receiver(tx, source, serial, sample_rate, name)
+                        .await
                 });
             }
             #[cfg(feature = "sdr")]
@@ -648,6 +669,9 @@ impl Source {
                 let path = file_path.file.clone();
                 let iq_format_str =
                     self.iq_format.clone().unwrap_or_else(|| "cu8".to_string());
+
+                // Use sample_rate from config or default to 2.4 MS/s
+                let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
 
                 tokio::spawn(async move {
                     use desperado::{IqAsyncSource, IqFormat};
@@ -681,7 +705,7 @@ impl Source {
                     let source = IqAsyncSource::from_file(
                         &path,
                         MODES_FREQ as u32,
-                        RATE_2_4M as u32,
+                        sample_rate as u32,
                         chunk_size as usize,
                         iq_format,
                     )
@@ -692,7 +716,7 @@ impl Source {
                         tx,
                         source,
                         serial,
-                        RATE_2_4M,
+                        sample_rate,
                         base_timestamp,
                         chunk_size,
                         name,

@@ -29,13 +29,33 @@ pub async fn receiver(
             let buffer_arrival_ns = now_in_ns();
             let buffer_arrival_time = buffer_arrival_ns as f64 * 1e-9;
 
-            let outbuf = magnitude(&buf);
             let resulting_data = match rate {
-                2.4e6 => demodulate2400(&outbuf).unwrap(),
+                2.4e6 => {
+                    let outbuf = magnitude(&buf);
+                    demodulate2400(&outbuf).unwrap()
+                }
+                6.0e6 => {
+                    // Convert Complex<f32> to i16 IQ for demod6000
+                    let mut iq_i16 = Vec::with_capacity(buf.len() * 2);
+                    for sample in &buf {
+                        // Scale f32 [-1.0, 1.0] to i16 range
+                        let i = (sample.re * 32767.0).clamp(-32768.0, 32767.0)
+                            as i16;
+                        let q = (sample.im * 32767.0).clamp(-32768.0, 32767.0)
+                            as i16;
+                        iq_i16.push(i);
+                        iq_i16.push(q);
+                    }
+                    crate::demod6000::demodulate6000(&iq_i16)
+                }
                 _ => {
-                    panic!("Unsupported sample rate: {}", rate);
+                    panic!(
+                        "Unsupported sample rate: {} (supported: 2.4e6, 6.0e6)",
+                        rate
+                    );
                 }
             };
+
             for data in resulting_data {
                 // Calculate when this message was received based on its sample position.
                 // Earlier samples (position 0) are older, so subtract offset from buffer arrival.
@@ -85,11 +105,30 @@ pub async fn file_receiver(
 
     while let Some(buf) = source.next().await {
         if let Ok(buf) = buf {
-            let outbuf = magnitude(&buf);
             let resulting_data = match rate {
-                2.4e6 => demodulate2400(&outbuf).unwrap(),
+                2.4e6 => {
+                    let outbuf = magnitude(&buf);
+                    demodulate2400(&outbuf).unwrap()
+                }
+                6.0e6 => {
+                    // Convert Complex<f32> to i16 IQ for demod6000
+                    let mut iq_i16 = Vec::with_capacity(buf.len() * 2);
+                    for sample in &buf {
+                        // Scale f32 [-1.0, 1.0] to i16 range
+                        let i = (sample.re * 32767.0).clamp(-32768.0, 32767.0)
+                            as i16;
+                        let q = (sample.im * 32767.0).clamp(-32768.0, 32767.0)
+                            as i16;
+                        iq_i16.push(i);
+                        iq_i16.push(q);
+                    }
+                    crate::demod6000::demodulate6000(&iq_i16)
+                }
                 _ => {
-                    panic!("Unsupported sample rate: {}", rate);
+                    panic!(
+                        "Unsupported sample rate: {} (supported: 2.4e6, 6.0e6)",
+                        rate
+                    );
                 }
             };
             for data in resulting_data {
@@ -185,6 +224,21 @@ pub fn getbits(
 }
 
 // mode_s.c
+
+/// Check if an ICAO address is plausible
+fn is_plausible_icao(addr: u32) -> bool {
+    if addr == 0x000000 {
+        return false;
+    }
+    if addr == 0xffffff {
+        return false;
+    }
+    if addr > 0xd00000 {
+        return false; // Unallocated high ranges
+    }
+    true
+}
+
 pub fn score_modes_message(msg: &[u8]) -> i32 {
     let validbits = msg.len() * 8;
 
@@ -214,6 +268,10 @@ pub fn score_modes_message(msg: &[u8]) -> i32 {
             // 5:  surveillance, altitude reply
             let crc = modes_checksum(msg, MODES_SHORT_MSG_BYTES * 8).unwrap();
 
+            if !is_plausible_icao(crc) {
+                return -2;
+            }
+
             if icao_filter_test(crc) {
                 1000
             } else {
@@ -227,6 +285,10 @@ pub fn score_modes_message(msg: &[u8]) -> i32 {
             let iid = crc & 0x7f;
             let crc = crc & 0x00ff_ff80;
             let addr = getbits(msg, 9, 32) as u32;
+
+            if !is_plausible_icao(addr) {
+                return -2;
+            }
 
             match (crc, iid, icao_filter_test(addr)) {
                 (0, 0, true) => 1600,
@@ -244,6 +306,10 @@ pub fn score_modes_message(msg: &[u8]) -> i32 {
             // 18: Extended squitter/non-transponder
             let crc = modes_checksum(msg, MODES_LONG_MSG_BYTES * 8).unwrap();
             let addr = getbits(msg, 9, 32) as u32;
+
+            if !is_plausible_icao(addr) {
+                return -2;
+            }
 
             match (crc, icao_filter_test(addr)) {
                 (0, true) => 1800,
@@ -263,6 +329,9 @@ pub fn score_modes_message(msg: &[u8]) -> i32 {
             // 20: Comm-B, altitude reply
             // 21: Comm-B, identity reply
             let crc = modes_checksum(msg, MODES_LONG_MSG_BYTES * 8).unwrap();
+            if !is_plausible_icao(crc) {
+                return -2;
+            }
             match icao_filter_test(crc) {
                 true => 1000,
                 false => -2,
@@ -278,6 +347,9 @@ pub fn score_modes_message(msg: &[u8]) -> i32 {
             // 30: Comm-D (ELM)
             // 31: Comm-D (ELM)
             let crc = modes_checksum(msg, MODES_LONG_MSG_BYTES * 8).unwrap();
+            if !is_plausible_icao(crc) {
+                return -2;
+            }
             match icao_filter_test(crc) {
                 true => 1000,
                 false => -2,
@@ -460,13 +532,13 @@ impl Phase {
 
 pub struct ModeSMessage {
     /// Binary message
-    msg: [u8; 14],
+    pub msg: [u8; 14],
     ///  RSSI, in the range [0..1], as a fraction of full-scale power
-    signal_level: f64,
+    pub signal_level: f64,
     /// Scoring from scoreModesMessage, if used
-    score: i32,
+    pub score: i32,
     /// Sample position in buffer where this message was found
-    sample_position: usize,
+    pub sample_position: usize,
 }
 
 pub fn demodulate2400(
