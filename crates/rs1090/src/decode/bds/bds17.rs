@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /**
  * ## Common Usage GICB Capability Report (BDS 1,7)
@@ -67,7 +67,9 @@ use serde::Serialize;
  * Reference: ICAO Doc 9871 Table A-2-23
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone, Default,
+)]
 #[serde(tag = "bds", rename = "17")]
 pub struct CommonUsageGICBCapabilityReport {
     #[deku(bits = "1")]

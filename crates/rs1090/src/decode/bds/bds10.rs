@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /**
  * ## Data Link Capability Report (BDS 1,0)
@@ -113,7 +113,9 @@ use serde::Serialize;
  * Additional implementation guidelines: ICAO Annex 10, Vol IV, §4.3.8.4.2.2.2
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(
+    Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone, Default,
+)]
 #[serde(tag = "bds", rename = "10")]
 pub struct DataLinkCapability {
     /// BDS Code (bits 1-8): Per ICAO Doc 9871 Table A-2-16  

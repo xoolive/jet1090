@@ -1,6 +1,6 @@
 use super::bds08;
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /**
  * ## Aircraft Identification (BDS 2,0)
@@ -48,7 +48,9 @@ use serde::Serialize;
  * Additional implementation guidelines: ICAO Doc 9871 §D.2.4.3
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(
+    Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone, Default,
+)]
 #[serde(tag = "bds", rename = "20")]
 pub struct AircraftIdentification {
     /// BDS Code (bits 1-8): Per ICAO Doc 9871 Table A-2-32  

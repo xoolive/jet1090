@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::decode::{AC13Field, ICAO};
 
@@ -66,7 +66,7 @@ use crate::decode::{AC13Field, ICAO};
  * Additional details: RTCA DO-185B, EUROCAE ED-143
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[serde(tag = "bds", rename = "30")]
 pub struct ACASResolutionAdvisory {
     #[deku(bits = "8", map = "fail_if_not30")]
@@ -197,7 +197,7 @@ pub struct ACASResolutionAdvisory {
     pub threat_type: ThreatType,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[deku(id_type = "u8", bits = "2")]
 #[serde(untagged)]
 pub enum ThreatType {
@@ -222,7 +222,7 @@ pub enum ThreatType {
     },
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 pub struct ThreadAddress {
     /// Threat identity data (icao24).
     pub threat_identity: ICAO,
@@ -232,7 +232,7 @@ pub struct ThreadAddress {
     pub zeros: u8,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 pub struct ThreatOrientation {
     /// Altitude code on 13 bits
     #[serde(rename = "threat_altitude")]

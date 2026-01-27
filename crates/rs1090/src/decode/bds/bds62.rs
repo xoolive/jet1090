@@ -1,7 +1,7 @@
 #![allow(clippy::suspicious_else_formatting)]
 
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /**
@@ -104,7 +104,7 @@ use std::fmt;
  *
  * Reference: DO-260B §2.2.3.2.7.1, Figure 2-10
  */
-#[derive(Copy, Clone, Debug, Serialize, PartialEq, DekuRead)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, DekuRead)]
 pub struct TargetStateAndStatusInformation {
     /// Subtype (bits 6-7): Per DO-260B §2.2.3.2.7.1.2  
     /// Identifies format of Target State and Status Message.  
@@ -402,7 +402,7 @@ impl fmt::Display for TargetStateAndStatusInformation {
 
 /// Selected Altitude Source: Per DO-260B §2.2.3.2.7.1.3.2
 /// Indicates the source of the selected altitude data.
-#[derive(Copy, Clone, Debug, Serialize, PartialEq, DekuRead)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, DekuRead)]
 #[deku(id_type = "u8", bits = "1")]
 pub enum AltSource {
     /// Mode Control Panel / Flight Control Unit

@@ -2,7 +2,7 @@
 
 use super::super::cpr::CPRFormat;
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use tracing::debug;
 
@@ -40,7 +40,7 @@ use tracing::debug;
  * - Positional accuracy: ~1.25 meters (typical), ~3.0m near poles (±87° latitude)
  */
 
-#[derive(Debug, PartialEq, DekuRead, Serialize, Copy, Clone)]
+#[derive(Debug, PartialEq, DekuRead, Serialize, Deserialize, Copy, Clone)]
 #[deku(ctx = "tc: u8")]
 pub struct SurfacePosition {
     #[deku(skip, default = "14 - tc")]

@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /**
  * ## Meteorological Routine Air Report (BDS 4,4)
@@ -69,7 +69,7 @@ use serde::Serialize;
  * Note: Two's complement coding used for all signed fields (§A.2.2.2)
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[serde(tag = "bds", rename = "44")]
 pub struct MeteorologicalRoutineAirReport {
     /// Figure of Merit / Source (bits 1-4): Per ICAO Doc 9871 Table A-2-68  
@@ -122,7 +122,7 @@ pub struct MeteorologicalRoutineAirReport {
     pub humidity: Option<f64>,
 }
 
-#[derive(Debug, PartialEq, Serialize, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub enum FigureOfMerit {
     /// Invalid
     Invalid,
@@ -137,7 +137,7 @@ pub enum FigureOfMerit {
     Reserved(u8),
 }
 
-#[derive(Debug, PartialEq, Serialize, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub enum Turbulence {
     Nil,
     Light,

@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /**
  * ## Heading and Speed Report (BDS 6,0)
@@ -89,7 +89,7 @@ use serde::Serialize;
  * Note: Two's complement coding used for all signed fields (§A.2.2.2)
  * Additional implementation guidelines in ICAO Doc 9871 §D.2.4.6
  */
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[serde(tag = "bds", rename = "60")]
 pub struct HeadingAndSpeedReport {
     /// Magnetic Heading (bits 1-12): Per ICAO Doc 9871 Table A-2-96  

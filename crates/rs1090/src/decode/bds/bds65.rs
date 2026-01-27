@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /**
@@ -90,7 +90,7 @@ use std::fmt;
  * Additional details: DO-260B §2.2.3.2.7.2
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 #[deku(id_type = "u8", bits = "3")]
 #[serde(untagged)]
 pub enum AircraftOperationStatus {
@@ -117,14 +117,14 @@ impl fmt::Display for AircraftOperationStatus {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct OperationStatusAirborne {
     /// The capacity class
-    #[serde(skip)]
+    #[serde(skip, default = "serde_default_capability_class_airborne")]
     pub capability_class: CapabilityClassAirborne,
 
     /// The operational mode
-    #[serde(skip)]
+    #[serde(skip, default = "serde_default_operational_mode")]
     pub operational_mode: OperationalMode,
 
     #[deku(pad_bytes_before = "1")]
@@ -141,10 +141,10 @@ impl fmt::Display for OperationStatusAirborne {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct CapabilityClassAirborne {
     #[deku(bits = "2", assert_eq = "0")]
-    #[serde(skip)]
+    #[serde(skip, default = "u8::default")]
     pub reserved0: u8,
 
     /// TCAS Resolution Advisory Active
@@ -158,7 +158,7 @@ pub struct CapabilityClassAirborne {
     pub cdti: bool,
 
     #[deku(bits = "2", assert_eq = "0")]
-    #[serde(skip)]
+    #[serde(skip, default = "u8::default")]
     pub reserved1: u8,
 
     /// Air-Referenced Velocity Report Capability
@@ -180,6 +180,18 @@ pub struct CapabilityClassAirborne {
     /// - 2: Support for multiple TC reports
     /// - 3: Reserved
     pub tc: u8,
+}
+
+pub fn serde_default_capability_class_airborne() -> CapabilityClassAirborne {
+    CapabilityClassAirborne {
+        reserved0: 0,
+        acas: false,
+        cdti: false,
+        reserved1: 0,
+        arv: false,
+        ts: false,
+        tc: 0,
+    }
 }
 
 impl fmt::Display for CapabilityClassAirborne {
@@ -204,27 +216,27 @@ impl fmt::Display for CapabilityClassAirborne {
 }
 
 /// Version 2 support only
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct OperationStatusSurface {
     /// The capacity class
-    #[serde(skip)]
+    #[serde(skip, default = "serde_default_capability_class_surface")]
     pub capability_class: CapabilityClassSurface,
 
     /// The capacity class L/W codes
     #[deku(bits = "4")]
-    #[serde(skip)]
+    #[serde(skip, default = "u8::default")]
     pub lw_codes: u8,
 
     /// The operational mode
-    #[serde(skip)]
+    #[serde(skip, default = "serde_default_operational_mode")]
     pub operational_mode: OperationalMode,
 
     /// The GPS antenna offset (2.2.3.2.7.2.4.7).
     /// Reference: <http://www.anteni.net/adsb/Doc/1090-WP30-18-DRAFT_DO-260B-V42.pdf>
-    #[serde(skip)]
+    #[serde(skip, default = "u8::default")]
     pub gps_antenna_offset: u8,
 
-    #[serde(flatten)]
+    #[serde(flatten, default = "serde_default_adsb_version_surface")]
     pub version: ADSBVersionSurface,
 }
 
@@ -237,10 +249,10 @@ impl fmt::Display for OperationStatusSurface {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct CapabilityClassSurface {
     #[deku(bits = "2", assert_eq = "0")]
-    #[serde(skip)]
+    #[serde(skip, default = "u8::default")]
     pub reserved0: u8,
 
     /// Position Offset Applied
@@ -274,6 +286,18 @@ pub struct CapabilityClassSurface {
     pub nic_c: u8,
 }
 
+pub fn serde_default_capability_class_surface() -> CapabilityClassSurface {
+    CapabilityClassSurface {
+        reserved0: 0,
+        poe: false,
+        es1090: false,
+        b2_low: false,
+        uat_in: false,
+        nac_v: 0,
+        nic_c: 0,
+    }
+}
+
 impl fmt::Display for CapabilityClassSurface {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "   NICc:               {}", self.nic_c)?;
@@ -282,10 +306,10 @@ impl fmt::Display for CapabilityClassSurface {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct OperationalMode {
     #[deku(bits = "2", assert_eq = "0")]
-    #[serde(skip)]
+    #[serde(skip, default = "u8::default")]
     reserved: u8,
 
     /// TCAS RA active
@@ -303,6 +327,17 @@ pub struct OperationalMode {
 
     #[deku(bits = "2")]
     system_design_assurance: u8,
+}
+
+pub fn serde_default_operational_mode() -> OperationalMode {
+    OperationalMode {
+        reserved: 0,
+        tcas_ra_active: false,
+        ident_switch_active: false,
+        reserved_recv_atc_service: false,
+        single_antenna_flag: false,
+        system_design_assurance: 0,
+    }
 }
 
 impl fmt::Display for OperationalMode {
@@ -333,7 +368,7 @@ impl fmt::Display for OperationalMode {
 /// (specification defined in RTCA document DO-260). Version 1 was introduced
 /// around 2008 (DO-260A), and version 2 around 2012 (DO-260B). Version 3 is
 /// currently being developed.
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 #[deku(id_type = "u8", bits = "3")]
 #[serde(tag = "version")]
 pub enum ADSBVersionAirborne {
@@ -432,7 +467,7 @@ impl fmt::Display for ADSBVersionAirborne {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct AirborneV1 {
     #[deku(bits = "1")]
     #[serde(rename = "NICs")]
@@ -466,7 +501,7 @@ pub struct AirborneV1 {
     pub horizontal_reference_direction: u8,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct AirborneV2 {
     #[deku(bits = "1")]
     #[serde(rename = "NICa")]
@@ -514,7 +549,7 @@ pub struct AirborneV2 {
 /// (specification defined in RTCA document DO-260).  
 /// Version 1 was introduced around 2008 (DO-260A), and version 2 around 2012 (DO-260B).
 /// Version 3 is currently being developed.
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 #[deku(id_type = "u8", bits = "3")]
 #[serde(tag = "version")]
 pub enum ADSBVersionSurface {
@@ -533,6 +568,10 @@ pub enum ADSBVersionSurface {
     #[deku(id_pat = "3..=7")]
     #[serde(rename = "3to7")]
     Reserved { id: u8 },
+}
+
+pub fn serde_default_adsb_version_surface() -> ADSBVersionSurface {
+    ADSBVersionSurface::DOC9871AppendixA(Empty {})
 }
 
 impl ADSBVersionSurface {
@@ -603,7 +642,7 @@ impl fmt::Display for ADSBVersionSurface {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct SurfaceV1 {
     #[deku(bits = "1")]
     #[serde(rename = "NICs")]
@@ -632,7 +671,7 @@ pub struct SurfaceV1 {
     pub horizontal_reference_direction: u8,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct SurfaceV2 {
     #[deku(bits = "1")]
     #[serde(rename = "NICa")]
@@ -668,16 +707,16 @@ pub struct SurfaceV2 {
     pub sil_supplement: u8,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct Empty {}
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct EmptyU8 {
     pub id: u8,
     pub unused: u8,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct ReservedStatus {
     pub data: [u8; 5],
 }

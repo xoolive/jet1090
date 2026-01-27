@@ -36,7 +36,7 @@ use tracing::debug;
  * | 24       | [`DF::CommDExtended`]               | 3.1.2.7.3   |
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[deku(id_type = "u8", bits = "5", ctx = "crc: u32")]
 #[serde(tag = "df")]
 pub enum DF {
@@ -46,31 +46,31 @@ pub enum DF {
     ShortAirAirSurveillance {
         /// Vertical status
         #[deku(bits = "1")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         vs: u8,
         /// CC:
         #[deku(bits = "1")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         cc: u8,
         /// unused
         #[deku(bits = "1")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         unused: u8,
         /// Sensitivity level, ACAS
         #[deku(bits = "3")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         sl: u8,
         /// Spare
         #[deku(bits = "2")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         unused1: u8,
         /// Reply information
         #[deku(bits = "4")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         ri: u8,
         /// unused
         #[deku(bits = "2")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         unused2: u8,
         /// Altitude code on 13 bits
         #[serde(rename = "altitude")]
@@ -135,7 +135,7 @@ pub enum DF {
         #[serde(rename = "icao24")]
         icao: ICAO,
         /// Parity/Interrogator identifier
-        #[serde(skip)]
+        #[serde(skip, default = "serde_default_icao_empty")]
         p_icao: ICAO,
     },
 
@@ -147,13 +147,13 @@ pub enum DF {
         /// Vertical Status (airborne: 0, onground: 1)
         vs: u8,
         #[deku(bits = "2")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         reserved1: u8,
         #[deku(bits = "3")]
         /// Sensitivity Level (inoperative: 0)
         sl: u8,
         #[deku(bits = "2")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         reserved2: u8,
         #[deku(bits = "4")]
         /// Reply information
@@ -164,14 +164,14 @@ pub enum DF {
         /// - 0111: ACAS with vertical and horizontal resolution capability
         ri: u8,
         #[deku(bits = "2")]
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         reserved3: u8,
         /// Altitude code on 13 bits
         #[serde(rename = "altitude")]
         ac: AC13Field,
         /// Message, ACAS (56 bits, a BDS of a type requested in UF=0)
         #[deku(count = "7")]
-        #[serde(skip)]
+        #[serde(skip, default = "Vec::new")]
         mv: Vec<u8>,
         /// Address/Parity
         #[serde(rename = "icao24")]
@@ -195,7 +195,7 @@ pub enum DF {
         #[serde(flatten)]
         cf: ControlField,
         /// Parity/interrogator identifier
-        #[serde(skip)]
+        #[serde(skip, default = "serde_default_icao_empty")]
         pi: ICAO,
     },
 
@@ -261,7 +261,7 @@ pub enum DF {
     /// 24: Comm-D Extended, Downlink Format 24 (3.1.2.7.3)
     #[deku(id_pat = "24..=31")]
     CommDExtended {
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         id: u8,
         /// Reserved
         #[deku(bits = "1")]
@@ -280,14 +280,18 @@ pub enum DF {
     },
 }
 
+pub fn serde_default_icao_empty() -> ICAO {
+    ICAO(0)
+}
+
 /// The entry point to Mode S and ADS-B decoding
 ///
 /// Use as `Message::try_from()` in mostly all applications
-#[derive(Debug, PartialEq, Serialize, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub struct Message {
     /// Calculated from all bits, should be 0 for ADS-B (raises a DekuError),
     /// icao24 otherwise
-    #[serde(skip)]
+    #[serde(skip, default = "u32::default")]
     pub crc: u32,
 
     /// The Downlink Format encoded in 5 bits
@@ -522,7 +526,7 @@ pub fn serialize_config(decode_time: bool) {
         .expect("configuration can only happen once");
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct TimedMessage {
     /// The timestamp (in s) of the first time the message was received
     pub timestamp: f64,
@@ -606,6 +610,17 @@ impl Serialize for IcaoParity {
     {
         let icao = format!("{:06x}", &self.0);
         serializer.serialize_str(&icao)
+    }
+}
+
+impl<'de> Deserialize<'de> for IcaoParity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        <IcaoParity as core::str::FromStr>::from_str(&s)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -715,6 +730,18 @@ impl Serialize for IdentityCode {
     }
 }
 
+impl<'de> Deserialize<'de> for IdentityCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let num =
+            u16::from_str_radix(&s, 16).map_err(serde::de::Error::custom)?;
+        Ok(Self(num))
+    }
+}
+
 /// 13-bit encoded altitude field (AC field) per ICAO Annex 10 Vol IV §3.1.2.6.5.4
 ///
 /// # Encoding Modes
@@ -759,7 +786,9 @@ impl Serialize for IdentityCode {
 ///
 /// - ICAO Annex 10 Volume IV §3.1.2.6.5.4 (AC altitude code)
 /// - DO-260B §2.2.5.1.5 (all-zeros = not available)
-#[derive(Debug, PartialEq, Eq, Serialize, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Eq, Serialize, Deserialize, DekuRead, Copy, Clone,
+)]
 pub struct AC13Field(
     #[deku(reader = "Self::read(deku::reader)")] pub Option<i32>,
 );
@@ -829,13 +858,16 @@ impl AC13Field {
 }
 
 /// Transponder level and additional information (3.1.2.5.2.2.1)
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone, Default,
+)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "3")]
 #[allow(non_camel_case_types)]
 pub enum Capability {
     /// Level 1 transponder (surveillance only), and either airborne or on the ground
     #[serde(rename = "level1")]
+    #[default]
     AG_LEVEL1 = 0x00,
     #[deku(id_pat = "0x01..=0x03")]
     AG_RESERVED,
@@ -872,11 +904,14 @@ impl fmt::Display for Capability {
 }
 
 /// Airborne or Ground and SPI (used in DF=4, 5, 20 or 21)
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone, Default,
+)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "3")]
 #[serde(rename_all = "snake_case")]
 pub enum FlightStatus {
+    #[default]
     NoAlertNoSpiAirborne = 0b000,
     NoAlertNoSpiOnGround = 0b001,
     AlertNoSpiAirborne = 0b010,
@@ -906,10 +941,13 @@ impl fmt::Display for FlightStatus {
 }
 
 /// The downlink request (used in DF=4, 5, 20 or 21)
-#[derive(Debug, PartialEq, Eq, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Eq, Serialize, Deserialize, DekuRead, Copy, Clone, Default,
+)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "5")]
 pub enum DownlinkRequest {
+    #[default]
     None = 0b00000,
     RequestSendCommB = 0b00001,
     CommBBroadcastMsg1 = 0b00100,
@@ -919,18 +957,22 @@ pub enum DownlinkRequest {
 }
 
 /// The utility message (used in DF=4, 5, 20 or 21)
-#[derive(Debug, PartialEq, Eq, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Eq, Serialize, Deserialize, DekuRead, Copy, Clone, Default,
+)]
 pub struct UtilityMessage {
     #[deku(bits = "4")]
     pub iis: u8,
     pub ids: UtilityMessageType,
 }
-
 /// The utility message type (used in DF=4, 5, 20 or 21)
-#[derive(Debug, PartialEq, Eq, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Eq, Serialize, Deserialize, DekuRead, Copy, Clone, Default,
+)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "2")]
 pub enum UtilityMessageType {
+    #[default]
     NoInformation = 0b00,
     CommB = 0b01,
     CommC = 0b10,
@@ -938,7 +980,7 @@ pub enum UtilityMessageType {
 }
 
 /// The control field in TIS-B messages (DF=18)
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 pub struct ControlField {
     #[serde(rename = "tisb")]
     pub field_type: ControlFieldType,
@@ -957,7 +999,7 @@ impl fmt::Display for ControlField {
 }
 
 /// The control field type in TIS-B messages (DF=18)
-#[derive(Debug, PartialEq, serde::Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[deku(id_type = "u8", bits = "3")]
 #[allow(non_camel_case_types)]
 pub enum ControlFieldType {
@@ -1011,10 +1053,13 @@ impl fmt::Display for ControlFieldType {
 }
 
 /// Uplink / Downlink (DF=24)
-#[derive(Debug, PartialEq, Eq, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Eq, Serialize, Deserialize, DekuRead, Copy, Clone, Default,
+)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "1")]
 pub enum KE {
+    #[default]
     DownlinkELMTx = 0,
     UplinkELMAck = 1,
 }

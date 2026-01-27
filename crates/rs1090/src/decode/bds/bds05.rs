@@ -1,7 +1,7 @@
 use crate::decode::cpr::CPRFormat;
 use crate::decode::{decode_id13, gray2alt};
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /**
@@ -33,7 +33,7 @@ use std::fmt;
  * - Altitude field 0x000 indicates altitude not available (DO-260B §2.2.5.1.5)
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 #[deku(ctx = "tc: u8")]
 pub struct AirbornePosition {
     #[deku(
@@ -51,7 +51,7 @@ pub struct AirbornePosition {
     /// (directly based on the typecode)
     pub nuc_p: u8,
 
-    #[serde(skip)]
+    #[serde(skip)] // TODO: should we really skip? serde deserialises to NoCondition
     /// Surveillance Status (bits 6-7): Indicates emergency/alert conditions.
     /// Per ICAO Doc 9871 Table A-2-6:
     pub ss: SurveillanceStatus,
@@ -219,7 +219,9 @@ impl fmt::Display for AirbornePosition {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Eq, Serialize, Deserialize, DekuRead, Copy, Clone, Default,
+)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "2")]
 /// Surveillance Status (bits 6-7): Indicates emergency/alert conditions.  
@@ -231,13 +233,14 @@ impl fmt::Display for AirbornePosition {
 ///
 /// Codes 1 and 2 take precedence over code 3.
 pub enum SurveillanceStatus {
+    #[default]
     NoCondition = 0,
     PermanentAlert = 1,
     TemporaryAlert = 2,
     SPICondition = 3,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Copy, Clone)]
 pub enum Source {
     #[serde(rename = "barometric")]
     Barometric = 0,

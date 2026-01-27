@@ -1,7 +1,7 @@
 use super::bds::{bds05, bds06, bds08, bds09, bds61, bds62, bds65};
 use super::{Capability, ICAO};
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /**
@@ -15,7 +15,7 @@ use std::fmt;
  *
  */
 
-#[derive(Debug, PartialEq, DekuRead, Clone, Serialize)]
+#[derive(Debug, PartialEq, DekuRead, Clone, Serialize, Deserialize)]
 pub struct ADSB {
     /// The transponder capability
     #[serde(skip)]
@@ -29,7 +29,7 @@ pub struct ADSB {
     pub message: ME,
 
     /// Parity/Interrogator ID
-    #[serde(skip)]
+    #[serde(skip, default = "crate::decode::serde_default_icao_empty")]
     pub parity: ICAO,
 }
 
@@ -64,14 +64,14 @@ impl fmt::Display for ADSB {
 * | 31       | [`bds65::AircraftOperationStatus`]                |
 */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 pub struct Unused {
     #[deku(skip, pad_bits_after = "48", default = "true")]
     #[serde(skip)]
     unused: bool,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[deku(id_type = "u8", bits = "5")]
 //#[serde(untagged)]
 #[serde(tag = "bds")]
@@ -82,7 +82,7 @@ pub enum ME {
     #[deku(id_pat = "1..=4")]
     #[serde(rename = "08")]
     BDS08 {
-        #[serde(skip)]
+        #[serde(skip, default = "u8::default")]
         id: u8,
         #[serde(flatten)]
         #[deku(ctx = "*id")]

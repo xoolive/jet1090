@@ -1,6 +1,6 @@
 use crate::decode::IdentityCode;
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /**
@@ -61,7 +61,7 @@ use std::fmt;
  *
  * Reference: ICAO Doc 9871 Tables B-2-97a and B-2-97b
  */
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct AircraftStatus {
     /// Subtype (bits 6-8): Per ICAO Doc 9871 Table B-2-97a
     /// Identifies message content type.
@@ -112,7 +112,7 @@ impl fmt::Display for AircraftStatus {
 ///   - 1 = Emergency/priority status
 ///   - 2 = ACAS RA Broadcast
 ///   - 3-7 = Reserved
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 #[deku(id_type = "u8", bits = "3")]
 #[serde(rename_all = "snake_case")]
 pub enum AircraftStatusType {
@@ -150,7 +150,7 @@ pub enum AircraftStatusType {
 ///   - 5 = Unlawful interference (Mode A code 7500)
 ///   - 6 = Downed aircraft
 ///   - 7 = Reserved
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "3")]
 #[serde(rename_all = "snake_case")]

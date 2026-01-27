@@ -1,8 +1,7 @@
 #![allow(clippy::suspicious_else_formatting)]
 
 use deku::prelude::*;
-use serde::ser::SerializeStruct;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /**
@@ -59,7 +58,7 @@ use std::fmt;
  * Note: Subtype 3 messages are very rare in practice; most aircraft report
  * ground speed (subtypes 1/2) based on GNSS position.
  */
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 pub struct AirborneVelocity {
     #[deku(bits = "3")]
     #[serde(skip)]
@@ -122,7 +121,7 @@ pub struct AirborneVelocity {
     ///   - GNSS (1): Rate based on GNSS geometric altitude
     pub vrate_src: VerticalRateSource,
 
-    #[serde(skip)]
+    #[serde(skip, default = "Sign::positive")]
     /// Vertical Rate Sign (bit 37): Per ICAO Doc 9871 Table A-2-9a
     ///   - Positive (0): Climbing (upward)
     ///   - Negative (1): Descending (downward)
@@ -154,7 +153,7 @@ pub struct AirborneVelocity {
     /// Reserved (bits 47-48): Reserved for turn indicator (not implemented)
     pub reserved: u8,
 
-    #[serde(skip)]
+    #[serde(skip, default = "Sign::positive")]
     /// GNSS Altitude Difference Sign (bit 49): Per ICAO Doc 9871 §A.2.3.5.7
     ///   - Positive (0): GNSS altitude above barometric altitude
     ///   - Negative (1): GNSS altitude below barometric altitude
@@ -215,7 +214,7 @@ fn read_geobaro<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     Ok(value)
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[deku(ctx = "subtype: u8", id = "subtype")]
 #[serde(untagged)]
 pub enum AirborneVelocitySubType {
@@ -234,7 +233,7 @@ pub enum AirborneVelocitySubType {
     Reserved1(ReservedVelocityData),
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 pub struct ReservedVelocityData {
     #[deku(bits = "22")]
     pub reserved_data: u32,
@@ -255,6 +254,11 @@ impl Sign {
             Self::Positive => 1,
             Self::Negative => -1,
         }
+    }
+
+    // for serde(default)
+    fn positive() -> Self {
+        Self::Positive
     }
 }
 
@@ -308,9 +312,9 @@ impl fmt::Display for Sign {
 /// Ground speed and track angle computed from components:
 /// - groundspeed = √(ew_vel² + ns_vel²)
 /// - track = atan2(ew_vel, ns_vel) converted to degrees (0-360°)
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 pub struct GroundSpeedDecoding {
-    #[serde(skip)]
+    #[serde(skip, default = "Sign::positive")]
     pub ew_sign: Sign,
     #[deku(
         endian = "big",
@@ -321,7 +325,7 @@ pub struct GroundSpeedDecoding {
     )]
     #[serde(skip)]
     pub ew_vel: f64,
-    #[serde(skip)]
+    #[serde(skip, default = "Sign::positive")]
     pub ns_sign: Sign,
     #[serde(skip)]
     #[deku(
@@ -417,21 +421,24 @@ impl Serialize for AirspeedSubsonicDecoding {
     where
         S: serde::ser::Serializer,
     {
-        let mut state = serializer.serialize_struct("Message", 2)?;
-        if let Some(heading) = &self.heading {
-            state.serialize_field("heading", heading)?;
-        }
-        if let Some(airspeed) = &self.airspeed {
-            match &self.airspeed_type {
-                AirspeedType::IAS => {
-                    state.serialize_field("IAS", &airspeed)?;
-                }
-                AirspeedType::TAS => {
-                    state.serialize_field("TAS", &airspeed)?;
-                }
-            }
-        }
-        state.end()
+        AirspeedSerdeHelper::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AirspeedSubsonicDecoding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        let helper = AirspeedSerdeHelper::deserialize(deserializer)?;
+        let (status_heading, heading, airspeed_type, airspeed) =
+            helper.into_components();
+        Ok(Self {
+            status_heading,
+            heading,
+            airspeed_type,
+            airspeed,
+        })
     }
 }
 
@@ -494,21 +501,80 @@ impl Serialize for AirspeedSupersonicDecoding {
     where
         S: serde::ser::Serializer,
     {
-        let mut state = serializer.serialize_struct("Message", 2)?;
-        if let Some(heading) = &self.heading {
-            state.serialize_field("heading", heading)?;
+        AirspeedSerdeHelper::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AirspeedSupersonicDecoding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        let helper = AirspeedSerdeHelper::deserialize(deserializer)?;
+        let (status_heading, heading, airspeed_type, airspeed) =
+            helper.into_components();
+        Ok(Self {
+            status_heading,
+            heading: heading.map(|h| h as f32),
+            airspeed_type,
+            airspeed,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct AirspeedSerdeHelper {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    heading: Option<f64>,
+    #[serde(rename = "IAS", skip_serializing_if = "Option::is_none")]
+    ias: Option<u16>,
+    #[serde(rename = "TAS", skip_serializing_if = "Option::is_none")]
+    tas: Option<u16>,
+}
+
+impl AirspeedSerdeHelper {
+    fn into_components(self) -> (bool, Option<f64>, AirspeedType, Option<u16>) {
+        let (airspeed_type, airspeed) = if let Some(ias) = self.ias {
+            (AirspeedType::IAS, Some(ias))
+        } else if let Some(tas) = self.tas {
+            (AirspeedType::TAS, Some(tas))
+        } else {
+            (AirspeedType::IAS, None)
+        };
+        (
+            self.heading.is_some(),
+            self.heading,
+            airspeed_type,
+            airspeed,
+        )
+    }
+}
+
+impl From<&AirspeedSubsonicDecoding> for AirspeedSerdeHelper {
+    fn from(v: &AirspeedSubsonicDecoding) -> Self {
+        let (ias, tas) = match v.airspeed_type {
+            AirspeedType::IAS => (v.airspeed, None),
+            AirspeedType::TAS => (None, v.airspeed),
+        };
+        Self {
+            heading: v.heading,
+            ias,
+            tas,
         }
-        if let Some(airspeed) = &self.airspeed {
-            match &self.airspeed_type {
-                AirspeedType::IAS => {
-                    state.serialize_field("IAS", &airspeed)?;
-                }
-                AirspeedType::TAS => {
-                    state.serialize_field("TAS", &airspeed)?;
-                }
-            }
+    }
+}
+
+impl From<&AirspeedSupersonicDecoding> for AirspeedSerdeHelper {
+    fn from(v: &AirspeedSupersonicDecoding) -> Self {
+        let (ias, tas) = match v.airspeed_type {
+            AirspeedType::IAS => (v.airspeed, None),
+            AirspeedType::TAS => (None, v.airspeed),
+        };
+        Self {
+            heading: v.heading.map(|h| h as f64),
+            ias,
+            tas,
         }
-        state.end()
     }
 }
 
@@ -549,7 +615,7 @@ pub enum DirectionNS {
     NorthToSouth = 1,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "1")]
 pub enum VerticalRateSource {

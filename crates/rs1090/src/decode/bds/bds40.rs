@@ -1,7 +1,7 @@
 #![allow(clippy::suspicious_else_formatting)]
 
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /**
  * ## Selected Vertical Intention (BDS 4,0)
@@ -67,7 +67,7 @@ use serde::Serialize;
  * from altitude control panel, FMS, or current altitude depending on flight mode."
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[serde(tag = "bds", rename = "40")]
 pub struct SelectedVerticalIntention {
     #[deku(reader = "read_selected(deku::reader)")]
@@ -163,7 +163,7 @@ pub struct SelectedVerticalIntention {
     pub target_altitude_source: TargetSource,
 }
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[deku(id_type = "u8", bits = "2")]
 pub enum TargetSource {
     #[deku(id = "0")]

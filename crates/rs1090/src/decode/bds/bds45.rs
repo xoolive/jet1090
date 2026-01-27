@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 /**
@@ -71,7 +71,9 @@ use tracing::trace;
  * Note: Two's complement coding used for all signed fields (§A.2.2.2)
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(
+    Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone, Default,
+)]
 #[serde(tag = "bds", rename = "45")]
 pub struct MeteorologicalHazardReport {
     #[deku(reader = "read_level(deku::reader)")]
@@ -128,8 +130,9 @@ pub struct MeteorologicalHazardReport {
     pub reserved: u8,
 }
 
-#[derive(Debug, PartialEq, Serialize, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Default)]
 pub enum Level {
+    #[default]
     Nil,
     Light,
     Moderate,

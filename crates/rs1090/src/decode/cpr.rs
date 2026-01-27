@@ -125,7 +125,9 @@ pub fn update_global_reference(
 }
 
 /// A flag to qualify a CPR position as odd or even
-#[derive(Debug, PartialEq, Eq, Serialize, DekuRead, Copy, Clone)]
+#[derive(
+    Debug, PartialEq, Eq, Serialize, Deserialize, DekuRead, Copy, Clone,
+)]
 #[repr(u8)]
 #[deku(id_type = "u8", bits = "1")]
 #[serde(rename_all = "snake_case")]

@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use tracing::{debug, trace};
 
@@ -45,7 +45,7 @@ use tracing::{debug, trace};
  * Note: ADS-B wake vortex categories differ from ICAO WTC definitions.
  */
 
-#[derive(Debug, PartialEq, DekuRead, Serialize, Clone)]
+#[derive(Debug, PartialEq, DekuRead, Serialize, Deserialize, Clone)]
 #[deku(ctx = "id: u8")]
 pub struct AircraftIdentification {
     /// Type Code Category (bits 1-5): Per ICAO Doc 9871 Table A-2-8
@@ -171,7 +171,7 @@ impl TryFrom<u8> for Typecode {
  * - ICAO WTC M ≈ ADS-B (TC=4, CA=2 or CA=3)
  * - ICAO WTC H/J ≈ ADS-B (TC=4, CA=5)
  */
-#[derive(Debug, PartialEq, Serialize, Copy, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Copy, Clone)]
 pub enum WakeVortex {
     Reserved,
 

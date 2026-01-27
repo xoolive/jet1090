@@ -1,6 +1,6 @@
 use deku::prelude::*;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
 
 /**
@@ -57,7 +57,9 @@ use tracing::{debug, trace};
  * Reference: ICAO Doc 9871 Table A-2-33, Annex 10 Vol IV Table 3-7
  */
 
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(
+    Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone, Default,
+)]
 #[serde(tag = "bds", rename = "21")]
 pub struct AircraftAndAirlineRegistrationMarkings {
     #[deku(bits = "1")]

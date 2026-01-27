@@ -16,7 +16,7 @@ use super::cpr::AircraftState;
 use super::AC13Field;
 use super::ICAO;
 use deku::{ctx::Order, prelude::*};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use tracing::debug;
@@ -29,7 +29,7 @@ use tracing::debug;
  * and the last two codes (4,4, 4,5) report meteorological information.
  */
 
-#[derive(Debug, PartialEq, Serialize, Clone, Default)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Default)]
 pub struct DF20DataSelector {
     #[serde(skip)]
     /// Set to true if all zeros, then there is no need to parse
@@ -121,7 +121,7 @@ impl DF20DataSelector {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Clone, Default)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Default)]
 pub struct DF21DataSelector {
     #[serde(skip)]
     /// Set to true if all zeros, then there is no need to parse

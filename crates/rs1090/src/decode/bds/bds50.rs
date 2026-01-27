@@ -1,5 +1,5 @@
 use deku::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /**
  * ## Track and Turn Report (BDS 5,0)
@@ -72,7 +72,7 @@ use serde::Serialize;
  *
  * Note: Two's complement coding used for all signed fields (§A.2.2.2)
  */
-#[derive(Debug, PartialEq, Serialize, DekuRead, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Clone)]
 #[serde(tag = "bds", rename = "50")]
 pub struct TrackAndTurnReport {
     /// Roll Angle (bits 1-11): Per ICAO Doc 9871 Table A-2-80  
