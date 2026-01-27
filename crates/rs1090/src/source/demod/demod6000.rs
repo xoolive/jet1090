@@ -1,14 +1,8 @@
 //! 6 MS/s ADS-B Demodulator
 //!
-//! Native 6.0 MS/s energy/correlation-based demodulator designed for Airspy Mini.
+//! Native 6.0 MS/s energy/correlation-based demodulator designed for non RTL-SDR
+//! SDRs capable of providing 6 MS/s IQ samples (e.g., Airspy, SDRplay, HackRF).
 //! Provides superior weak-signal recovery and collision tolerance compared to 2.4 MS/s.
-//!
-//! # Design Principles
-//!
-//! - **No decimation**: Process at native 6 MS/s for maximum collision tolerance
-//! - **Energy-based detection**: More robust than threshold-based approaches
-//! - **Integer math**: Use u32/u64 for magnitude², avoid float in hot path
-//! - **Single-pass pipeline**: No reprocessing or backtracking
 //!
 //! # Performance Targets
 //!
@@ -26,19 +20,12 @@
 //!
 //! # References
 //!
-//! - Design spec: `analysis/demod6000.md`
-//! - RadarCape-inspired approach
 //! - ICAO Annex 10 Vol IV (Mode S specifications)
 
-use crate::decode::crc::modes_checksum;
-use crate::source::iqread::{getbits, icao_filter_add, icao_filter_test};
-
-/// ICAO filter flag for non-transponder ADS-B
-const ICAO_FILTER_ADSB_NT: u32 = 1 << 25;
-
-/// Mode S message lengths
-const MODES_SHORT_MSG_BITS: usize = 56; // 7 bytes
-const MODES_LONG_MSG_BITS: usize = 112; // 14 bytes
+use super::{
+    validate_modes_message, ModeSMessage, MODES_LONG_MSG_BITS,
+    MODES_SHORT_MSG_BITS,
+};
 
 /// Demodulator configuration
 const SAMPLE_RATE: u32 = 6_000_000; // 6 MS/s
@@ -67,9 +54,6 @@ const DC_ALPHA: f32 = 0.995;
 
 /// Minimum energy delta for bit decision confidence (increased for better noise rejection)
 const MIN_BIT_ENERGY_DELTA: u64 = 10000;
-
-// Re-export ModeSMessage from iqread module for compatibility
-pub use crate::source::iqread::ModeSMessage;
 
 /// Magnitude buffer with DC removal and energy calculation
 struct MagnitudeProcessor {
@@ -290,45 +274,12 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
         energy_buffer.push(energy);
     }
 
-    // Diagnostic logging every 100 buffers
-    static CALL_COUNTER: std::sync::atomic::AtomicUsize =
-        std::sync::atomic::AtomicUsize::new(0);
-    let call_count =
-        CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    if call_count % 100 == 1 {
-        let avg_energy = energy_buffer.iter().sum::<u64>() as f64
-            / energy_buffer.len() as f64;
-        let max_energy = *energy_buffer.iter().max().unwrap_or(&0);
-        let min_energy = *energy_buffer.iter().min().unwrap_or(&0);
-
-        // Calculate percentiles for better understanding of distribution
-        let mut sorted = energy_buffer.clone();
-        sorted.sort_unstable();
-        let p50 = sorted[sorted.len() / 2];
-        let p95 = sorted[sorted.len() * 95 / 100];
-        let p99 = sorted[sorted.len() * 99 / 100];
-
-        tracing::info!(
-            "Demod6000 call #{}: {} energy samples, avg={:.1}, min={}, p50={}, p95={}, p99={}, max={}",
-            call_count,
-            energy_buffer.len(),
-            avg_energy,
-            min_energy,
-            p50,
-            p95,
-            p99,
-            max_energy
-        );
-    }
-
     // Search for preambles and decode messages
     let mut detector = PreambleDetector::new();
     let mut pos = 0;
-    let mut preambles_found = 0;
 
     while pos < energy_buffer.len() {
-        if let Some(correlation_score) = detector.detect(&energy_buffer, pos) {
-            preambles_found += 1;
+        if let Some(_correlation_score) = detector.detect(&energy_buffer, pos) {
             // Found preamble! Try to decode message
             let msg_start = pos + PREAMBLE_LENGTH_SAMPLES;
 
@@ -346,30 +297,29 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
                     continue;
                 }
 
-                // Validate with CRC
-                if let Ok(crc) = modes_checksum(&msg, MODES_SHORT_MSG_BITS) {
-                    if is_valid_short_message(&msg, crc) {
-                        let signal_level = signal_power as f64
-                            / (MODES_SHORT_MSG_BITS * SAMPLES_PER_BIT) as f64
-                            / 65535.0
-                            / 65535.0;
+                // Validate with shared validation function
+                let score = validate_modes_message(&msg);
+                if score >= 0 {
+                    let signal_level = signal_power as f64
+                        / (MODES_SHORT_MSG_BITS * SAMPLES_PER_BIT) as f64
+                        / 65535.0
+                        / 65535.0;
 
-                        // Convert Vec<u8> to [u8; 14] (pad with zeros for short messages)
-                        let mut msg_array = [0u8; 14];
-                        msg_array[..msg.len()].copy_from_slice(&msg);
+                    // Convert Vec<u8> to [u8; 14] (pad with zeros for short messages)
+                    let mut msg_array = [0u8; 14];
+                    msg_array[..msg.len()].copy_from_slice(&msg);
 
-                        results.push(ModeSMessage {
-                            msg: msg_array,
-                            signal_level,
-                            score: correlation_score as i32,
-                            sample_position: pos,
-                        });
+                    results.push(ModeSMessage {
+                        msg: msg_array,
+                        signal_level,
+                        score,
+                        sample_position: pos,
+                    });
 
-                        // Skip ahead to avoid re-detecting same message
-                        pos += PREAMBLE_LENGTH_SAMPLES
-                            + MODES_SHORT_MSG_BITS * SAMPLES_PER_BIT;
-                        continue;
-                    }
+                    // Skip ahead to avoid re-detecting same message
+                    pos += PREAMBLE_LENGTH_SAMPLES
+                        + MODES_SHORT_MSG_BITS * SAMPLES_PER_BIT;
+                    continue;
                 }
             }
 
@@ -387,30 +337,29 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
                     continue;
                 }
 
-                // Validate with CRC
-                if let Ok(crc) = modes_checksum(&msg, MODES_LONG_MSG_BITS) {
-                    if is_valid_long_message(&msg, crc) {
-                        let signal_level = signal_power as f64
-                            / (MODES_LONG_MSG_BITS * SAMPLES_PER_BIT) as f64
-                            / 65535.0
-                            / 65535.0;
+                // Validate with shared validation function
+                let score = validate_modes_message(&msg);
+                if score >= 0 {
+                    let signal_level = signal_power as f64
+                        / (MODES_LONG_MSG_BITS * SAMPLES_PER_BIT) as f64
+                        / 65535.0
+                        / 65535.0;
 
-                        // Convert Vec<u8> to [u8; 14]
-                        let mut msg_array = [0u8; 14];
-                        msg_array.copy_from_slice(&msg);
+                    // Convert Vec<u8> to [u8; 14]
+                    let mut msg_array = [0u8; 14];
+                    msg_array.copy_from_slice(&msg);
 
-                        results.push(ModeSMessage {
-                            msg: msg_array,
-                            signal_level,
-                            score: correlation_score as i32,
-                            sample_position: pos,
-                        });
+                    results.push(ModeSMessage {
+                        msg: msg_array,
+                        signal_level,
+                        score,
+                        sample_position: pos,
+                    });
 
-                        // Skip ahead to avoid re-detecting same message
-                        pos += PREAMBLE_LENGTH_SAMPLES
-                            + MODES_LONG_MSG_BITS * SAMPLES_PER_BIT;
-                        continue;
-                    }
+                    // Skip ahead to avoid re-detecting same message
+                    pos += PREAMBLE_LENGTH_SAMPLES
+                        + MODES_LONG_MSG_BITS * SAMPLES_PER_BIT;
+                    continue;
                 }
             }
 
@@ -421,125 +370,5 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
         }
     }
 
-    if call_count % 100 == 1 {
-        tracing::info!(
-            "Demod6000 call #{}: found {} preambles, {} valid messages (threshold={}, noise_floor={})",
-            call_count,
-            preambles_found,
-            results.len(),
-            detector.threshold,
-            detector.noise_floor
-        );
-    }
-
     results
-}
-
-/// Check if ICAO address is in a plausible allocated range
-/// Rejects obvious noise like 000000, FFFFFF, and unallocated high ranges
-fn is_plausible_icao(addr: u32) -> bool {
-    // Reject all zeros
-    if addr == 0x000000 {
-        return false;
-    }
-
-    // Reject all ones
-    if addr == 0xffffff {
-        return false;
-    }
-
-    // Reject high unallocated ranges (> 0xd00000 is mostly unallocated)
-    // Most allocated ranges are below 0xc00000
-    if addr > 0xd00000 {
-        return false;
-    }
-
-    true
-}
-
-/// Validate short Mode S message (DF 0, 4, 5, 11)
-fn is_valid_short_message(msg: &[u8], crc: u32) -> bool {
-    if msg.is_empty() {
-        return false;
-    }
-
-    let df = msg[0] >> 3; // Downlink Format in bits 1-5
-
-    match df {
-        0 | 4 | 5 => {
-            // Short air-air surveillance / altitude reply
-            // CRC encodes ICAO address - must be in filter and plausible
-            is_plausible_icao(crc) && icao_filter_test(crc)
-        }
-        11 => {
-            // All-call reply
-            let iid = crc & 0x7f;
-            let crc = crc & 0x00ff_ff80;
-            let addr = getbits(msg, 9, 32) as u32;
-
-            // Check if ICAO is plausible first
-            if !is_plausible_icao(addr) {
-                return false;
-            }
-
-            match (crc, iid, icao_filter_test(addr)) {
-                (0, 0, true) => true, // Known ICAO, perfect match
-                (0, 0, false) => {
-                    // New ICAO, add to filter
-                    icao_filter_add(addr);
-                    true
-                }
-                (0, _, true) => true, // Known ICAO with IID
-                _ => false,
-            }
-        }
-        _ => false,
-    }
-}
-
-/// Validate long Mode S message (DF 16, 17, 18, 20, 21, 24-31)
-fn is_valid_long_message(msg: &[u8], crc: u32) -> bool {
-    if msg.is_empty() {
-        return false;
-    }
-
-    let df = msg[0] >> 3; // Downlink Format
-
-    match df {
-        17 | 18 => {
-            // Extended squitter (ADS-B)
-            if crc != 0 {
-                return false; // Must have perfect CRC for ADS-B
-            }
-
-            let addr = getbits(msg, 9, 32) as u32;
-
-            // Check if ICAO is plausible
-            if !is_plausible_icao(addr) {
-                return false;
-            }
-
-            if icao_filter_test(addr) {
-                true // Known ICAO
-            } else {
-                // New ICAO address, add to filter
-                if df == 17 {
-                    icao_filter_add(addr);
-                } else {
-                    // DF 18: Non-transponder (mark with flag)
-                    icao_filter_add(addr | ICAO_FILTER_ADSB_NT);
-                }
-                true
-            }
-        }
-        16 | 20 | 21 => {
-            // Comm-B messages: CRC encodes ICAO address
-            is_plausible_icao(crc) && icao_filter_test(crc)
-        }
-        24..=31 => {
-            // Comm-D messages: CRC encodes ICAO address
-            is_plausible_icao(crc) && icao_filter_test(crc)
-        }
-        _ => false,
-    }
 }

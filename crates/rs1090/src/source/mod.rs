@@ -1,6 +1,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod beast;
 
+pub mod demod;
+
 #[cfg(feature = "sdr")]
 pub mod iqread;
 

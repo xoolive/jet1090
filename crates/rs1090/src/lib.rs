@@ -3,7 +3,6 @@
 #![doc = include_str!("../readme.md")]
 pub mod data;
 pub mod decode;
-pub mod demod6000;
 pub mod source;
 
 pub mod prelude {
