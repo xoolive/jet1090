@@ -191,13 +191,12 @@ pub struct Source {
     /// Longitude of the source (alternative to airport)
     pub longitude: Option<f64>,
     /// Airport code to set latitude/longitude (alternative to explicit coordinates)
-    #[serde(skip_serializing)]
     pub airport: Option<String>,
     /// Localize the source of data, altitude (in m, WGS84 height)
     pub altitude: Option<f64>,
     /// Gain setting for SDR devices (RTL-SDR default: 49.6, PlutoSDR default: 73.0)
     #[cfg(feature = "sdr")]
-    pub gain: Option<f64>,
+    pub gain: Option<Gain>,
     /// Sample rate in Hz (2.4e6 or 6.0e6, default: 2.4e6)
     #[cfg(feature = "sdr")]
     pub sample_rate: Option<f64>,
@@ -228,7 +227,7 @@ impl<'de> Deserialize<'de> for Source {
             airport: Option<String>,
             altitude: Option<f64>,
             #[cfg(feature = "sdr")]
-            gain: Option<f64>,
+            gain: Option<Gain>,
             #[cfg(feature = "sdr")]
             sample_rate: Option<f64>,
             #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
@@ -454,7 +453,7 @@ impl FromStr for Source {
                 if let Some(gain_str) = param.strip_prefix("gain=") {
                     // Parse gain value
                     if let Ok(gain_val) = gain_str.parse::<f64>() {
-                        source.gain = Some(gain_val);
+                        source.gain = Some(Gain::Manual(gain_val));
                     }
                 }
                 #[cfg(any(feature = "rtlsdr", feature = "soapy"))]
@@ -580,21 +579,22 @@ impl Source {
                 };
 
                 // Use gain from config or default to 49.6 for RTL-SDR
-                let gain_value = self.gain.unwrap_or(RTLSDR_GAIN);
+                let gain =
+                    self.gain.clone().unwrap_or(Gain::Manual(RTLSDR_GAIN));
 
                 // Use sample_rate from config or default to 2.4 MS/s
                 let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
 
                 // Use bias_tee from config or default to false
-                let bias_tee_enabled = self.bias_tee.unwrap_or(false);
+                let bias_tee = self.bias_tee.unwrap_or(false);
 
                 tokio::spawn(async move {
                     let rtlsdr_config = RtlSdrConfig {
                         device,
                         center_freq: MODES_FREQ as u32,
                         sample_rate: sample_rate as u32,
-                        gain: Gain::Manual(gain_value),
-                        bias_tee: bias_tee_enabled,
+                        gain,
+                        bias_tee,
                     };
                     let config = DeviceConfig::RtlSdr(rtlsdr_config);
                     let source = IqAsyncSource::from_device_config(&config)
@@ -615,7 +615,8 @@ impl Source {
                 }
 
                 // Use gain from config or default to 50.0 for PlutoSDR
-                let gain_value = self.gain.unwrap_or(PLUTO_GAIN);
+                let gain =
+                    self.gain.clone().unwrap_or(Gain::Manual(PLUTO_GAIN));
 
                 // Use sample_rate from config or default to 2.4 MS/s
                 let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
@@ -625,7 +626,7 @@ impl Source {
                         uri,
                         center_freq: MODES_FREQ as i64,
                         sample_rate: sample_rate as i64,
-                        gain: Gain::Manual(gain_value),
+                        gain,
                     };
                     let config = DeviceConfig::Pluto(pluto_config);
                     let source = IqAsyncSource::from_device_config(&config)
@@ -640,8 +641,8 @@ impl Source {
                 let args = soapy_path.soapy.clone();
 
                 // Use gain from config or default to 49.6 for SoapySDR (same as RTL-SDR)
-                let gain_value = self.gain.unwrap_or(RTLSDR_GAIN);
-                let bias_tee_enabled = self.bias_tee.unwrap_or(false);
+                let gain = self.gain.clone().unwrap_or(Gain::Manual(49.6));
+                let bias_tee = self.bias_tee.unwrap_or(false);
 
                 // Use sample_rate from config or default to 2.4 MS/s
                 let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
@@ -652,9 +653,8 @@ impl Source {
                         center_freq: MODES_FREQ,
                         sample_rate,
                         channel: 0,
-                        gain: Gain::Manual(gain_value),
-                        gain_element: "TUNER".to_string(),
-                        bias_tee: bias_tee_enabled,
+                        gain,
+                        bias_tee,
                     };
                     let config = DeviceConfig::Soapy(soapy_config);
                     let source = IqAsyncSource::from_device_config(&config)
@@ -1225,7 +1225,7 @@ mod test {
         "#;
         let source: Source =
             toml::from_str(toml).expect("Failed to parse TOML with gain");
-        assert_eq!(source.gain, Some(42.5));
+        assert_eq!(source.gain, Some(Gain::Manual(42.5)));
 
         // Test gain with serial number selection
         let toml = r#"
@@ -1237,7 +1237,7 @@ mod test {
         if let Address::Rtlsdr(path) = &source.address {
             assert_eq!(path.config.serial, Some("00000001".to_string()));
         }
-        assert_eq!(source.gain, Some(30.0));
+        assert_eq!(source.gain, Some(Gain::Manual(30.0)));
     }
 
     #[test]
@@ -1336,7 +1336,7 @@ mod test {
             source
         );
         if let Ok(src) = source {
-            assert_eq!(src.gain, Some(40.0));
+            assert_eq!(src.gain, Some(Gain::Manual(40.0)));
         }
 
         // Test gain with airport code (using ? syntax)
@@ -1347,7 +1347,7 @@ mod test {
             source
         );
         if let Ok(src) = source {
-            assert_eq!(src.gain, Some(42.5));
+            assert_eq!(src.gain, Some(Gain::Manual(42.5)));
             assert_eq!(src.latitude, Some(43.628101));
             assert_eq!(src.longitude, Some(1.367263));
         }
@@ -1360,7 +1360,7 @@ mod test {
             source
         );
         if let Ok(src) = source {
-            assert_eq!(src.gain, Some(42.5));
+            assert_eq!(src.gain, Some(Gain::Manual(42.5)));
             assert_eq!(src.latitude, Some(43.628101));
             assert_eq!(src.longitude, Some(1.367263));
         }
@@ -1373,7 +1373,7 @@ mod test {
             source
         );
         if let Ok(src) = source {
-            assert_eq!(src.gain, Some(35.0));
+            assert_eq!(src.gain, Some(Gain::Manual(35.0)));
             assert_eq!(src.latitude, Some(43.628101));
             assert_eq!(src.longitude, Some(1.367263));
         }
@@ -1386,7 +1386,7 @@ mod test {
             source
         );
         if let Ok(src) = source {
-            assert_eq!(src.gain, Some(30.0));
+            assert_eq!(src.gain, Some(Gain::Manual(30.0)));
         }
 
         // Test that invalid gain value is ignored (non-numeric)
@@ -1637,7 +1637,7 @@ mod test {
             assert!(source.is_ok(), "Failed to parse URI with all parameters");
             if let Ok(src) = source {
                 assert_eq!(src.bias_tee, Some(true));
-                assert_eq!(src.gain, Some(42.5));
+                assert_eq!(src.gain, Some(Gain::Manual(42.5)));
                 assert_eq!(src.latitude, Some(43.628101));
                 assert_eq!(src.longitude, Some(1.367263));
             }
