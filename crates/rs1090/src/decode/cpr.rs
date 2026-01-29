@@ -1180,11 +1180,11 @@ mod tests {
                     ..
                 } = adsb.message
                 {
-                    if airborne.latitude.is_some() {
+                    if let Some(latitude) = airborne.latitude {
                         positions_after += 1;
                         eprintln!(
                             "Decoded position after gap: {:.4}°N, {:.4}°E",
-                            airborne.latitude.unwrap(),
+                            latitude,
                             airborne.longitude.unwrap()
                         );
                     }
