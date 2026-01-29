@@ -53,7 +53,7 @@ const ENERGY_WINDOW_SIZE: usize = 3;
 const DC_ALPHA: f32 = 0.995;
 
 /// Minimum energy delta for bit decision confidence (increased for better noise rejection)
-const MIN_BIT_ENERGY_DELTA: u64 = 10000;
+const MIN_BIT_ENERGY_DELTA: u64 = 5000;
 
 /// Magnitude buffer with DC removal and energy calculation
 struct MagnitudeProcessor {
@@ -152,8 +152,7 @@ impl PreambleDetector {
         if self.sample_count.is_multiple_of(1000) {
             let current_energy = energy_buffer[pos];
             self.noise_floor = (self.noise_floor * 99 + current_energy) / 100;
-            // Use 50x multiplier instead of 10x for better noise rejection
-            self.threshold = self.noise_floor * 50;
+            self.threshold = self.noise_floor * 30;
         }
 
         // Check if score exceeds threshold
@@ -164,7 +163,7 @@ impl PreambleDetector {
                 .filter(|&&tap| energy_buffer[pos + tap] > self.noise_floor * 2)
                 .count();
 
-            if strong_taps >= 4 {
+            if strong_taps >= 3 {
                 Some(score as u64)
             } else {
                 None
