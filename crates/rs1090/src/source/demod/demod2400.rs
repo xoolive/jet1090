@@ -1,10 +1,20 @@
 use super::{validate_modes_message, ModeSMessage, MODES_LONG_MSG_BYTES};
 
+// Minimum trailing samples needed to decode a full long message
+// This matches the TRAILING_SAMPLES from the original dump1090 implementation
+// which accounts for all phase variations and safety margin
+const MIN_TRAILING_SAMPLES: usize = 326;
+
 pub fn demodulate2400(samples: &[u16]) -> Vec<ModeSMessage> {
     let mut results = vec![];
 
+    // Ensure we have enough samples to process
+    if samples.len() < MIN_TRAILING_SAMPLES {
+        return results;
+    }
+
     let mut skip_count: usize = 0;
-    'jloop: for j in 0..samples.len() {
+    'jloop: for j in 0..(samples.len() - MIN_TRAILING_SAMPLES) {
         if skip_count > 0 {
             skip_count -= 1;
             continue 'jloop;
