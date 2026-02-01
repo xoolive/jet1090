@@ -49,7 +49,7 @@ tonic-prost = { version = "0.14.2", optional = true }
 tower = { version = "0.5.2", optional = true }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
-zip = { version = "7.0.0", optional = true }
+zip = { version = "7.2.0", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.49.0", features = ["full"] }
