@@ -33,7 +33,7 @@ console_error_panic_hook = { version = "0.1.7", optional = true }
 getrandom = { version = "0.2.15", features = ["js"] }
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3.56"
+wasm-bindgen-test = "0.3.64"
 
 [package.metadata.wasm-pack.profile.release]
 # TODO check if this is still needed
