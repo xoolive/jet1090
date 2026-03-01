@@ -19,7 +19,7 @@ sero = ['rs1090/sero']
 ssh = ['rs1090/ssh']
 
 [dependencies]
-chrono = "0.4.43"
+chrono = "0.4.44"
 clap = { version = "4.5.56", features = ["color", "derive", "wrap_help", "env"] }
 clap_complete = "4.5.64"
 clap_complete_nushell = "4.5.10"
