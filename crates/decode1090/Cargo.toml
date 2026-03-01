@@ -14,7 +14,7 @@ homepage.workspace = true
 clap = { version = "4.5.56", features = ["color", "derive", "wrap_help"] }
 deku = "0.20.2"
 flate2 = "1.1"
-futures-util = "0.3.31"
+futures-util = "0.3.32"
 hex = "0.4.3"
 rs1090 = { version = "0.5.1", path = "../rs1090" }
 serde = { version = "1.0.228", features = ["derive"] }
