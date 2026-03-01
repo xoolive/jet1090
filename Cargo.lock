@@ -1430,9 +1430,9 @@ dependencies = [
 
 [[package]]
 name = "desperado"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eff65fd670f81d9bafa2dbc7fd322383dbb5a2503a2d79785d4cad004e4f2c16"
+checksum = "0bbf5e41c66e70f995ceb7b59fed2d9bc621ecf93633fb687033ba10046f153a"
 dependencies = [
  "dirs",
  "futures",
@@ -1444,6 +1444,8 @@ dependencies = [
  "serde",
  "soapysdr",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4576,9 +4578,9 @@ dependencies = [
 
 [[package]]
 name = "rtl-sdr-rs"
-version = "0.2.1"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "595a48d5cb78bbc4775fe4c09fb502038be9f062eb374de14f391a61a3c0eac4"
+checksum = "b3e39d1d957178d9bc3d2641e41ea083205f304b6b2db4f6efd60bc45498aa82"
 dependencies = [
  "byteorder",
  "log",
