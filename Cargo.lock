@@ -1415,7 +1415,7 @@ dependencies = [
  "rtl-sdr-rs",
  "rusb",
  "serde",
- "soapysdr",
+ "soapysdr 0.4.5",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2645,7 +2645,7 @@ dependencies = [
  "rs1090",
  "serde",
  "serde_json",
- "soapysdr",
+ "soapysdr 0.5.0",
  "tokio",
  "toml 0.9.10+spec-1.1.0",
  "tracing",
@@ -4443,7 +4443,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "soapysdr",
+ "soapysdr 0.5.0",
  "ssh2-config",
  "tokio",
  "tokio-tungstenite 0.28.0",
@@ -4960,7 +4960,18 @@ checksum = "339c509da350bfa8d579db8fd08cc75034584a55a2fc92c6c8057c142ed62519"
 dependencies = [
  "log",
  "num-complex",
- "soapysdr-sys",
+ "soapysdr-sys 0.7.5",
+]
+
+[[package]]
+name = "soapysdr"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69408a5363f264bdb91d01021a0d88944d6341bd40e90b234cd7533b99623dff"
+dependencies = [
+ "log",
+ "num-complex",
+ "soapysdr-sys 0.8.1",
 ]
 
 [[package]]
@@ -4971,6 +4982,15 @@ checksum = "abb5e50f86d0bf0c3312b77fce8737f760ce30adfa22baae97ffdd66a939356b"
 dependencies = [
  "bindgen 0.66.1",
  "cc",
+ "pkg-config",
+]
+
+[[package]]
+name = "soapysdr-sys"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f436607817a47de9b0716931dd874cd273993a69091d174222d0b9099c2f748b"
+dependencies = [
  "pkg-config",
 ]
 
