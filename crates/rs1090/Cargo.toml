@@ -41,7 +41,7 @@ regex = "1.12.2"
 reqwest = { version = "0.12.28", optional = true, default-features = false, features = ["rustls-tls"] }
 rusqlite = { version = "0.37.0", features = ["bundled"], optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.148"
+serde_json = "1.0.149"
 soapysdr = { version = "0.5.0", optional = true }
 ssh2-config = { version = "0.7.0", optional = true }
 tonic = { version = "0.14.2", features = ["_tls-any"], optional = true }
