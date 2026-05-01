@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::warn;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -413,6 +413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_dec = shared.clone();
     let shared_web = shared.clone();
     let shared_exp = shared.clone();
+    let mut quit_rx = shared_dec.quit_tx.subscribe();
 
     // Handle signals (SIGINT, SIGTERM, SIGHUP) to ensure terminal restoration
     if terminal.is_some() {
@@ -439,7 +440,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Restore terminal and signal shutdown
             tui::restore().ok();
-            shared_signal.should_quit.store(true, Ordering::Relaxed);
+            shared_signal.request_quit();
         });
 
         #[cfg(windows)]
@@ -462,7 +463,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Restore terminal and signal shutdown
             tui::restore().ok();
-            shared_signal.should_quit.store(true, Ordering::Relaxed);
+            shared_signal.request_quit();
         });
     }
 
@@ -608,7 +609,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut last_reference_update: f64 = 0.0;
     let mut first_msg = true;
-    while let Some(mut msg) = rx_dedup.recv().await {
+
+    loop {
+        if *quit_rx.borrow() {
+            break;
+        }
+
+        let maybe_msg = tokio::select! {
+            _ = quit_rx.changed() => None,
+            maybe_msg = rx_dedup.recv() => maybe_msg,
+        };
+
+        let Some(mut msg) = maybe_msg else {
+            break;
+        };
         if first_msg {
             // This workaround results from soapysdr writing directly on stdout.
             // The best thing would be to not write to stdout in the first
@@ -810,18 +824,28 @@ pub struct SharedState {
     sensors: BTreeMap<u64, Sensor>,
     /// Quit flag - lock-free atomic
     should_quit: Arc<AtomicBool>,
+    /// Quit notification for tasks blocked on async receives
+    quit_tx: watch::Sender<bool>,
     /// Clear screen flag - lock-free atomic
     should_clear: Arc<AtomicBool>,
 }
 
 impl SharedState {
     fn new(sensors: BTreeMap<u64, Sensor>) -> Self {
+        let (quit_tx, _quit_rx) = watch::channel(false);
+
         Self {
             state_vectors: Arc::new(RwLock::new(BTreeMap::new())),
             sensors,
             should_quit: Arc::new(AtomicBool::new(false)),
+            quit_tx,
             should_clear: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn request_quit(&self) {
+        self.should_quit.store(true, Ordering::Relaxed);
+        let _ = self.quit_tx.send(true);
     }
 }
 
@@ -858,9 +882,7 @@ fn update(
                 (false, Char('j')) | (_, Down) => jet1090.next(),
                 (false, Char('k')) | (_, Up) => jet1090.previous(),
                 (false, Char('g')) | (_, PageUp) | (_, Home) => jet1090.home(),
-                (false, Char('q')) | (false, Esc) => {
-                    shared.should_quit.store(true, Ordering::Relaxed)
-                }
+                (false, Char('q')) | (false, Esc) => shared.request_quit(),
                 (false, Char('a')) => jet1090.sort_key = SortKey::ALTITUDE,
                 (false, Char('c')) => jet1090.sort_key = SortKey::CALLSIGN,
                 (false, Char('v')) => jet1090.sort_key = SortKey::VRATE,
