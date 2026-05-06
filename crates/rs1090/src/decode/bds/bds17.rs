@@ -122,18 +122,24 @@ pub struct CommonUsageGICBCapabilityReport {
     pub bds40: bool,
 
     #[deku(bits = "1")]
+    #[cfg_attr(feature = "bds-infer", deku(map = "fail_if_true"))]
     #[serde(skip_serializing_if = "is_false")]
     /// Next waypoint identifier
+    /// Never set in civil-airliner ground truth
     pub bds41: bool,
 
     #[deku(bits = "1")]
+    #[cfg_attr(feature = "bds-infer", deku(map = "fail_if_true"))]
     #[serde(skip_serializing_if = "is_false")]
     /// Next waypoint position
+    /// Never set in civil-airliner ground truth
     pub bds42: bool,
 
     #[deku(bits = "1")]
+    #[cfg_attr(feature = "bds-infer", deku(map = "fail_if_true"))]
     #[serde(skip_serializing_if = "is_false")]
     /// Next waypoint information
+    /// Never set in civil-airliner ground truth
     pub bds43: bool,
 
     #[deku(bits = "1")]
@@ -147,8 +153,10 @@ pub struct CommonUsageGICBCapabilityReport {
     pub bds45: bool,
 
     #[deku(bits = "1")]
+    #[cfg_attr(feature = "bds-infer", deku(map = "fail_if_true"))]
     #[serde(skip_serializing_if = "is_false")]
     /// VHF channel report
+    /// Never set in civil-airliner ground truth
     pub bds48: bool,
 
     #[deku(bits = "1")]
@@ -172,18 +180,24 @@ pub struct CommonUsageGICBCapabilityReport {
     pub bds53: bool,
 
     #[deku(bits = "1")]
+    #[cfg_attr(feature = "bds-infer", deku(map = "fail_if_true"))]
     #[serde(skip_serializing_if = "is_false")]
     /// Waypoint 1
+    /// Never set in civil-airliner ground truth
     pub bds54: bool,
 
     #[deku(bits = "1")]
+    #[cfg_attr(feature = "bds-infer", deku(map = "fail_if_true"))]
     #[serde(skip_serializing_if = "is_false")]
     /// Waypoint 2
+    /// Never set in civil-airliner ground truth
     pub bds55: bool,
 
     #[deku(bits = "1")]
+    #[cfg_attr(feature = "bds-infer", deku(map = "fail_if_true"))]
     #[serde(skip_serializing_if = "is_false")]
     /// Waypoint 3
+    /// Never set in civil-airliner ground truth
     pub bds56: bool,
 
     #[deku(bits = "1")]
@@ -207,6 +221,17 @@ pub struct CommonUsageGICBCapabilityReport {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+#[cfg(feature = "bds-infer")]
+fn fail_if_true(value: bool) -> Result<bool, DekuError> {
+    if value {
+        Err(DekuError::Assertion(
+            "BDS 1,7 dead capability bit is set".into(),
+        ))
+    } else {
+        Ok(value)
+    }
 }
 
 #[cfg(feature = "bds-infer")]

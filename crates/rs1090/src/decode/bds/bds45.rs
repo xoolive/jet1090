@@ -76,34 +76,31 @@ use tracing::trace;
 )]
 #[serde(tag = "bds", rename = "45")]
 pub struct MeteorologicalHazardReport {
-    #[deku(reader = "read_level(deku::reader)")]
+    #[deku(reader = "read_level_must_be_null(deku::reader)")]
     /// Turbulence (bits 1-3): Per ICAO Doc 9871 Table A-2-69  
-    /// Severity level (Nil, Light, Moderate, Severe) per PANS-ATM (Doc 4444)  
-    /// Returns None if status bit (bit 1) is 0.
+    /// Returns None if status bit is 0. Operationally never populated
+    /// by civil airliners; a non-null value almost certainly means this
+    /// payload is a phantom BDS 4,5 candidate decoded from another register.
     pub turbulence: Option<Level>,
 
-    #[deku(reader = "read_level(deku::reader)")]
+    #[deku(reader = "read_level_must_be_null(deku::reader)")]
     /// Wind Shear (bits 4-6): Per ICAO Doc 9871 Table A-2-69  
-    /// Severity level (Nil, Light, Moderate, Severe) per PANS-ATM (Doc 4444)  
-    /// Returns None if status bit (bit 4) is 0.
+    /// Returns None if status bit is 0. Operationally never populated.
     pub wind_shear: Option<Level>,
 
-    #[deku(reader = "read_level(deku::reader)")]
+    #[deku(reader = "read_level_must_be_null(deku::reader)")]
     /// Microburst (bits 7-9): Per ICAO Doc 9871 Table A-2-69  
-    /// Severity level (Nil, Light, Moderate, Severe) per PANS-ATM (Doc 4444)  
-    /// Returns None if status bit (bit 7) is 0.
+    /// Returns None if status bit is 0. Operationally never populated.
     pub microburst: Option<Level>,
 
-    #[deku(reader = "read_level(deku::reader)")]
+    #[deku(reader = "read_level_must_be_null(deku::reader)")]
     /// Icing (bits 10-12): Per ICAO Doc 9871 Table A-2-69  
-    /// Severity level (Nil, Light, Moderate, Severe) per PANS-ATM (Doc 4444)  
-    /// Returns None if status bit (bit 10) is 0.
+    /// Returns None if status bit is 0. Operationally never populated.
     pub icing: Option<Level>,
 
-    #[deku(reader = "read_level(deku::reader)")]
+    #[deku(reader = "read_level_must_be_null(deku::reader)")]
     /// Wake Vortex (bits 13-15): Per ICAO Doc 9871 Table A-2-69  
-    /// Severity level (Nil, Light, Moderate, Severe) per PANS-ATM (Doc 4444)  
-    /// Returns None if status bit (bit 13) is 0.
+    /// Returns None if status bit is 0. Operationally never populated.
     pub wake_vortex: Option<Level>,
 
     #[deku(reader = "read_temperature(deku::reader)")]
@@ -164,6 +161,23 @@ fn read_level<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     }
 }
 
+/// Like [`read_level`] but also rejects any non-null result under `bds-infer`.
+/// Operationally, civil airliners never populate BDS 4,5 hazard fields; a
+/// non-null value is a strong signal that this is a phantom candidate decoded
+/// from a different register.
+fn read_level_must_be_null<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
+    reader: &mut Reader<R>,
+) -> Result<Option<Level>, DekuError> {
+    let level = read_level(reader)?;
+    #[cfg(feature = "bds-infer")]
+    if level.is_some() {
+        return Err(DekuError::Assertion(
+            "BDS 4,5 hazard field is non-null".into(),
+        ));
+    }
+    Ok(level)
+}
+
 fn read_temperature<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     reader: &mut Reader<R>,
 ) -> Result<Option<f64>, DekuError> {
@@ -192,16 +206,33 @@ fn read_temperature<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     );
 
     let msg = "Invalid temperature value {}°C outside [-80, 60]";
-    match (status, value, temperature) {
-        (true, _, temperature) if (-80. ..=60.).contains(&temperature) => {
-            Ok(Some(temperature))
+    // hard-reject: valid OAT bounded by [-80, +60] °C.
+    #[cfg(feature = "bds-infer")]
+    {
+        match (status, value, temperature) {
+            (true, _, temperature) if (-80. ..=60.).contains(&temperature) => {
+                Ok(Some(temperature))
+            }
+            (true, _, _) => Err(DekuError::Assertion(msg.into())),
+            //(false, _) => Ok(None),
+            // In practice, I see quite some pressure fields with invalid status but non zero values
+            (false, 0, _) => Ok(None),
+            (false, _, _) => {
+                Err(DekuError::Assertion("Invalid temperature value".into()))
+            }
         }
-        (true, _, _) => Err(DekuError::Assertion(msg.into())),
-        //(false, _) => Ok(None),
-        // In practice, I see quite some pressure fields with invalid status but non zero values
-        (false, 0, _) => Ok(None),
-        (false, _, _) => {
-            Err(DekuError::Assertion("Invalid temperature value".into()))
+    }
+
+    // Without `bds-infer`, only the status / sign-bit structural checks remain.
+    #[cfg(not(feature = "bds-infer"))]
+    {
+        let _ = msg;
+        match (status, value) {
+            (true, _) => Ok(Some(temperature)),
+            (false, 0) => Ok(None),
+            (false, _) => {
+                Err(DekuError::Assertion("Invalid temperature value".into()))
+            }
         }
     }
 }

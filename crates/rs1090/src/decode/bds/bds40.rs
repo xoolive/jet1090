@@ -228,10 +228,12 @@ fn read_selected<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     let value = value * 16;
     // (encoded as a multiple of 16, but rounded to the closest 100 ft)
     let value = (value + 8) / 100 * 100;
+    // hard-reject: selected MCP/FMS altitudes
+    // above 50 000 ft are not operationally meaningful for civil airliners.
     #[cfg(feature = "bds-infer")]
-    if value > 45000 {
+    if value > 50000 {
         let msg = format!(
-            "Value for selected_fms or selected_mcp: {value} ft > 45000 ft"
+            "Value for selected_fms or selected_mcp: {value} ft > 50 000 ft"
         );
         return Err(DekuError::Assertion(msg.into()));
     }
@@ -284,7 +286,18 @@ fn read_qnh<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
         }
     }
 
-    Ok(Some(value as f64 * 0.1 + 800.))
+    let baro = value as f64 * 0.1 + 800.;
+    // hard-reject: operational barometric
+    // settings stay within [800, 1200] mb. The encoding floor is 800 mb,
+    // so only the upper bound is reachable in practice.
+    #[cfg(feature = "bds-infer")]
+    if !(800. ..=1200.).contains(&baro) {
+        return Err(DekuError::Assertion(
+            format!("BDS 40 barometric setting {baro} mb outside [800, 1200]")
+                .into(),
+        ));
+    }
+    Ok(Some(baro))
 }
 
 #[cfg(test)]

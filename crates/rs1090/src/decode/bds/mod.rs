@@ -6,24 +6,41 @@
 //! code of a Comm-B reply must be guessed from the 56-bit MB payload alone.
 //! Two strategies are available, switched at compile time:
 //!
-//! * **Default (`bds-infer` feature on)** — full inference strategy. Each
-//!   candidate decoder enforces physical range checks (e.g. groundspeed
-//!   ≤ 600 kt, Mach ≤ 1, |TAS − GS| ≤ 200 kt), cross-field consistency
-//!   (roll vs. track-rate sign, IAS vs. Mach), strict capability-bit
-//!   constraints from ICAO Doc 9871 on BDS 17 / 18, and the BDS 21
-//!   registration regex. The candidate set in [`infer_bds`] also includes
-//!   BDS 06 / 08 / 09 / 61 / 62.
+//! * **Default (`bds-infer` feature on)** — full inference strategy.
+//!   In addition to the structural / status-bit checks of the minimal
+//!   strategy, the following families of validation rules are active:
 //!
-//! * **Minimal (`--no-default-features`)** — reproduces the IWAC 2026 paper
-//!   § 4.1 baseline. Only reserved bits, status-bit consistency and
-//!   spec-mandated value ranges are enforced; the relaxed capability bits
-//!   on BDS 17 / 18 are accepted; BDS 06 / 08 / 09 / 61 / 62 are excluded
-//!   from [`infer_bds`]. This is the configuration on top of which the
-//!   paper's φ → X → S → P → T scoring pipeline is layered.
+//!   - **Hard physical-limit rejection** in the per-field readers:
+//!     BDS 05 altitude ≤ 50 000 ft;
+//!     BDS 40 selected MCP / FMS altitude ≤ 50 000 ft and barometric setting
+//!     in [800, 1200] mb;
+//!     BDS 50 groundspeed ≤ 700 kt, TAS ≤ 600 kt, |roll| ≤ 45°;
+//!     BDS 60 IAS ≤ 500 kt, Mach ≤ 1, |vrate_inertial| ≤ 6 000 ft/min
+//!     (the *barometric* altitude rate is intentionally not bounded
+//!     because of known instrument inertia / barometric noise);
+//!     BDS 44 temperature in [-80, +60] °C and wind speed ≤ 250 kt;
+//!     BDS 45 static temperature in [-80, +60] °C;
+//!     BDS 21 registration with at most 2 `#` placeholders.
+//!   - **Density-based scoring** combined with **within-record cross-field
+//!     penalties**: for the candidates in BDS 05 / 40 / 44 / 45 / 50 / 60,
+//!     a mean log-density across decoded fields ([`density`]) is summed
+//!     with the cross-field penalty ([`penalty`], which currently covers
+//!     BDS 50 |TAS−GS| and roll/track-rate sign, and BDS 60 IAS/Mach
+//!     ratio). The candidate is rejected when the combined score falls
+//!     below [`density::DENSITY_THRESHOLD`] (default `−3.0`).
+//!   - Strict capability-bit constraints from ICAO Doc 9871 on BDS 17 / 18.
+//!   - The candidate set in [`infer_bds`] also includes BDS 06 / 08 / 09 /
+//!     61 / 62.
+//!
+//! * **Minimal (`--no-default-features`)** — baseline strategy. Only
+//!   reserved bits, status-bit consistency and spec-mandated value ranges
+//!   are enforced; the relaxed capability bits on BDS 17 / 18 are
+//!   accepted; BDS 06 / 08 / 09 / 61 / 62 are excluded from [`infer_bds`].
 //!
 //! Decoder bug-fixes (BDS 05 / 06 / 08 5-bit offset, BDS 10 prepend, BDS 21
-//! dash-placeholder mapping, BDS 17 `bds20` accepting 0) are applied
-//! unconditionally in both strategies.
+//! dash-placeholder mapping, BDS 17 `bds20` accepting 0, BDS 44 temperature
+//! sign-bit wrap-around fallback) are applied unconditionally in both
+//! strategies.
 
 pub mod bds05;
 pub mod bds06;
@@ -44,6 +61,10 @@ pub mod bds60;
 pub mod bds61;
 pub mod bds62;
 pub mod bds65;
+#[cfg(feature = "bds-infer")]
+pub mod density;
+#[cfg(feature = "bds-infer")]
+pub mod penalty;
 
 use self::bds05::AirbornePosition;
 use self::bds06::SurfacePosition;
@@ -184,13 +205,60 @@ fn extract_tc(payload: &[u8]) -> u8 {
     payload[0] >> 3
 }
 
+/// Apply the combined density + cross-field score gate to a successfully
+/// decoded candidate.
+///
+/// With `bds-infer` enabled (default), the candidate's combined score is
+///
+/// ```text
+///     score = mean(field_log_densities)   // density.rs
+///           + cross_field_penalty         // penalty.rs
+/// ```
+///
+/// and the candidate is rejected with [`DecodingError::DecodingFailed`]
+/// when the combined score falls below [`density::DENSITY_THRESHOLD`]
+/// (default `−3.0`). Candidates with no density-scored field and a zero
+/// cross-field penalty are accepted unconditionally (no signal). Without
+/// `bds-infer`, this function is the identity.
+#[inline]
+fn apply_score_gate(
+    result: Result<DecodedBds, DecodingError>,
+) -> Result<DecodedBds, DecodingError> {
+    #[cfg(feature = "bds-infer")]
+    {
+        match result {
+            Ok(decoded) => {
+                let mean = density::density_score(&decoded);
+                let pen = penalty::penalty(&decoded);
+                if mean.is_none() && pen == 0.0 {
+                    return Ok(decoded);
+                }
+                let score = mean.unwrap_or(0.0) + pen;
+                if score < density::DENSITY_THRESHOLD {
+                    Err(DecodingError::DecodingFailed(format!(
+                        "combined score {score:.2} below threshold {:.1}",
+                        density::DENSITY_THRESHOLD
+                    )))
+                } else {
+                    Ok(decoded)
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+    #[cfg(not(feature = "bds-infer"))]
+    {
+        result
+    }
+}
+
 /// Attempt to decode the BDS payload based on the BDS code
 /// Returns None if decoding fails or BDS type is not supported
 pub fn decode_payload(
     payload: &[u8],
     bds_code: u8,
 ) -> Result<DecodedBds, DecodingError> {
-    match bds_code {
+    let result = match bds_code {
         0x05 => {
             let tc = extract_tc(payload);
             if !((9..=18).contains(&tc) || (20..=22).contains(&tc)) {
@@ -330,7 +398,8 @@ pub fn decode_payload(
                 .map_err(|e| DecodingError::DecodingFailed(e.to_string()))
         }
         _ => Err(DecodingError::InvalidBdsCode(bds_code)),
-    }
+    };
+    apply_score_gate(result)
 }
 
 /// Decode a BDS payload with a required BDS code (strict decoding)
@@ -366,7 +435,7 @@ pub fn decode_bds(
         });
     }
 
-    match bds_code {
+    let result = match bds_code {
         0x05 => {
             let tc = extract_tc(payload);
             if !((9..=18).contains(&tc) || (20..=22).contains(&tc)) {
@@ -519,7 +588,8 @@ pub fn decode_bds(
                 .map_err(|e| DecodingError::DecodingFailed(e.to_string()))
         }
         _ => Err(DecodingError::InvalidBdsCode(bds_code)),
-    }
+    };
+    apply_score_gate(result)
 }
 
 /// Infer possible BDS codes from a Comm-B payload (inference mode)
@@ -530,6 +600,9 @@ pub fn decode_bds(
 ///
 /// # Arguments
 /// * `payload` - The Comm-B data field (typically 7 bytes)
+/// * `icao24` - Optional ICAO 24-bit aircraft address, used to validate BDS 2,1
+///   registration strings against the country-prefix pattern inferred from the
+///   address range. Pass `None` when the address is not available.
 ///
 /// # Returns
 /// * `Vec<DecodedBds>` - All successfully decoded BDS variants, ordered by BDS code
@@ -538,10 +611,10 @@ pub fn decode_bds(
 /// # Example
 /// ```ignore
 /// let payload = vec![0x80, 0x02, 0x04, 0x08, 0x0E, 0x20, 0x47];
-/// let results = infer_bds(&payload);
+/// let results = infer_bds(&payload, None);
 /// // Returns all BDS codes that successfully decode this payload
 /// ```
-pub fn infer_bds(payload: &[u8]) -> Vec<DecodedBds> {
+pub fn infer_bds(payload: &[u8], icao24: Option<u32>) -> Vec<DecodedBds> {
     if payload.is_empty() {
         return Vec::new();
     }
@@ -555,7 +628,52 @@ pub fn infer_bds(payload: &[u8]) -> Vec<DecodedBds> {
     ];
     for bds_code in candidates {
         if let Ok(decoded) = decode_bds(payload, *bds_code) {
+            // P1: icao24-aware registration validation for BDS 2,1.
+            // Rejects phantom BDS 2,1 candidates whose decoded registration
+            // does not match any of the four structural buckets for the
+            // country inferred from the aircraft's ICAO address range.
+            #[cfg(feature = "bds-infer")]
+            if let (DecodedBds::Bds21(ref bds21), Some(addr)) =
+                (&decoded, icao24)
+            {
+                if let Some(reg) = &bds21.aircraft_registration {
+                    if !bds21::validate_registration(reg, addr) {
+                        continue;
+                    }
+                }
+            }
             results.push(decoded);
+        }
+    }
+
+    // P2: winner-take-all.
+    // BDS 1,0 / 2,0 / 3,0 are identified by a mandatory byte-header prefix
+    // (0x10 / 0x20 / 0x30) that no other register produces, making them
+    // high-confidence identifications. BDS 2,1 after passing P1 joins this
+    // tier. When any such candidate is present, it evicts every other
+    // surviving candidate — phantom co-survivors on the same payload cannot
+    // be genuine.
+    #[cfg(feature = "bds-infer")]
+    {
+        let has_winner = results.iter().any(|d| {
+            matches!(
+                d,
+                DecodedBds::Bds10(_)
+                    | DecodedBds::Bds20(_)
+                    | DecodedBds::Bds21(_)
+                    | DecodedBds::Bds30(_)
+            )
+        });
+        if has_winner {
+            results.retain(|d| {
+                matches!(
+                    d,
+                    DecodedBds::Bds10(_)
+                        | DecodedBds::Bds20(_)
+                        | DecodedBds::Bds21(_)
+                        | DecodedBds::Bds30(_)
+                )
+            });
         }
     }
 

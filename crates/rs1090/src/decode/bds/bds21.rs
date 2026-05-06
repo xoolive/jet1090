@@ -1,8 +1,11 @@
 use deku::prelude::*;
-#[cfg(feature = "bds-infer")]
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
+
+#[cfg(feature = "bds-infer")]
+use crate::data::patterns::PATTERNS;
 
 /**
  * ## Aircraft and Airline Registration Markings (BDS 2,1)
@@ -139,21 +142,22 @@ pub fn aircraft_registration_read<
     debug!("Decoded registration: {}", encoded);
 
     if status {
-        #[cfg(not(feature = "bds-infer"))]
-        {
-            Ok(Some(encoded))
-        }
+        // hard-reject: real BDS 21 registrations contain at most 2 `#`
+        // placeholders (used by the 6-bit ICAO alphabet for non-alphanumeric
+        // positions). Strings with 3 or more `#` are almost always phantom
+        // decodes from a different BDS payload. The stricter
+        // country-prefix pattern check belongs to a separate filtering
+        // stage and is not enforced here.
         #[cfg(feature = "bds-infer")]
-        {
-            let re = Regex::new(r"^[A-Z0-9]+[\s#]?[A-Z0-9]+$").unwrap();
-            if re.is_match(&encoded) {
-                Ok(Some(encoded))
-            } else {
-                Err(DekuError::Assertion(
-                    format!("Invalid aircraft registration {encoded}").into(),
-                ))
-            }
+        if encoded.chars().filter(|&c| c == '#').count() > 2 {
+            return Err(DekuError::Assertion(
+                format!(
+                    "BDS 21 registration {encoded:?} has > 2 '#' placeholders"
+                )
+                .into(),
+            ));
         }
+        Ok(Some(encoded))
     } else if all_zeros {
         Ok(None)
     } else {
@@ -206,6 +210,94 @@ pub fn airline_registration_read<
     }
 }
 
+/// Validate a decoded BDS 2,1 registration against the country-prefix
+/// patterns derived from the aircraft's `icao24` address.
+///
+/// Returns `true` when the registration is plausible for the country
+/// inferred from the ICAO 24-bit address range, `false` when it should
+/// be rejected as a phantom candidate.
+///
+/// The check is organised into four buckets, tried in order:
+///
+/// 1. **Direct country-prefix match** — the registration matches the
+///    country's own pattern (e.g. `JA840J` for Japan `0x84xxxx`).
+/// 2. **Airline-prefix strip** — drop 2–3 leading characters (IATA airline
+///    code) and retry bucket 1 (e.g. `SQ9VDHA` → `9V-DHA` Singapore).
+/// 3. **Airline-suffix strip** — drop 2 trailing characters and retry
+///    bucket 1 (e.g. `B2487CA` → `B-2487` China).
+/// 4. **Flight-callsign shape** — matches `^[A-Z]{2,4}\d{2,5}[A-Z]{0,3}$`
+///    with length 5–7 and no `#` (e.g. `BRB1672`, `CIB1800`).
+///
+/// When no country pattern can be resolved for the `icao24` (unknown range
+/// or pattern-less entry), the function returns `true` to avoid false
+/// rejects on legitimate but uncommon registrations.
+#[cfg(feature = "bds-infer")]
+pub fn validate_registration(reg: &str, icao24: u32) -> bool {
+    // Bucket 4: flight-callsign shape — checked first because it is
+    // icao24-independent and very cheap.
+    static CALLSIGN_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^[A-Z]{2,4}\d{2,5}[A-Z]{0,3}$").unwrap());
+
+    // Resolve the country pattern for this ICAO address range.
+    let country_pattern: Option<String> = PATTERNS
+        .registers
+        .iter()
+        .find(|r| {
+            if let (Some(s), Some(e)) = (&r.start, &r.end) {
+                let start =
+                    u32::from_str_radix(&s[2..], 16).unwrap_or(u32::MAX);
+                let end = u32::from_str_radix(&e[2..], 16).unwrap_or(0);
+                icao24 >= start && icao24 <= end
+            } else {
+                false
+            }
+        })
+        .and_then(|r| r.pattern.clone());
+
+    // If no pattern is found for this range, accept unconditionally.
+    let Some(raw_pattern) = country_pattern else {
+        return true;
+    };
+
+    // Build a dash-stripped version of the pattern so it matches our
+    // canonical (dash-less) registrations.
+    let stripped_pattern = raw_pattern.replace('-', "");
+    let Ok(re) = Regex::new(&stripped_pattern) else {
+        return true; // malformed pattern → accept
+    };
+
+    // Bucket 1: direct country-prefix match.
+    if re.is_match(reg) {
+        return true;
+    }
+
+    // Buckets 2 & 3: airline-prefix/suffix strip.
+    for strip_len in [2usize, 3] {
+        // Prefix strip
+        if reg.len() > strip_len && re.is_match(&reg[strip_len..]) {
+            return true;
+        }
+        // Suffix strip (only length 2)
+        if strip_len == 2 && reg.len() > strip_len {
+            let end = reg.len() - strip_len;
+            if re.is_match(&reg[..end]) {
+                return true;
+            }
+        }
+    }
+
+    // Bucket 4: callsign shape (no `#`, length 5–7, IATA-like prefix).
+    if reg.len() >= 5
+        && reg.len() <= 7
+        && !reg.contains('#')
+        && CALLSIGN_RE.is_match(reg)
+    {
+        return true;
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +340,36 @@ mod tests {
         } else {
             unreachable!();
         }
+    }
+
+    #[cfg(feature = "bds-infer")]
+    #[test]
+    fn test_validate_registration() {
+        // Bucket 1: direct country match
+        // Japan: icao24 0x84xxxx, pattern "^JA"
+        assert!(validate_registration("JA824A", 0x843a1b));
+        // US: icao24 0xa0xxxx, pattern "^N"
+        assert!(validate_registration("N706CK", 0xa4a6fd));
+        // China: icao24 0x78xxxx, pattern "^B-"
+        assert!(validate_registration("B2487", 0x780123));
+        // France: icao24 0x38xxxx, pattern "^F-"
+        assert!(validate_registration("FGZHA", 0x3950ab));
+
+        // Bucket 2: airline-prefix strip (3 chars: SQ + 9V-DHA -> 9VDHA)
+        // Singapore: icao24 0x76xxxx, pattern "^9V-"
+        assert!(validate_registration("SQ9VDHA", 0x76c123));
+
+        // Bucket 3: airline-suffix strip (2 chars: B2487CA -> B2487)
+        assert!(validate_registration("B2487CA", 0x780123));
+
+        // Bucket 4: callsign shape
+        assert!(validate_registration("BRB1672", 0x843a1b));
+        assert!(validate_registration("CIB1800", 0x843a1b));
+
+        // Reject: clearly wrong country prefix for icao24 range
+        assert!(!validate_registration("XXXXXX", 0x843a1b)); // Japan range, non-JA
+                                                             // Reject: all-hash (would be caught by phi1 upstream, but validate_registration
+                                                             // also rejects non-matching strings)
+        assert!(!validate_registration("ZZZZZZ", 0x843a1b)); // Japan range, non-JA
     }
 }

@@ -178,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         serde_json::to_string(&message).unwrap()
                     } else {
                         // BDS inference fallback
-                        let inferred = infer_bds(&bytes);
+                        let inferred = infer_bds(&bytes, None);
                         let mut decoded_map = serde_json::json!({});
                         for decoded in inferred.iter() {
                             let bds_code = bds_code_from_decoded(decoded);

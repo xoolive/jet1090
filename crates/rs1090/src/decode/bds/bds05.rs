@@ -178,6 +178,15 @@ fn decode_ac12<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
         // This supports negative altitudes for below-sea-level airports
         let n = ((num & 0x0fe0) >> 1) | (num & 0x000f);
         let altitude = i32::from(n) * 25 - 1000;
+        // hard-reject: no civil airliner operates above 50 000 ft; values
+        // higher than this almost certainly come from a phantom BDS 05
+        // candidate decoded from a different BDS payload.
+        #[cfg(feature = "bds-infer")]
+        if altitude > 50000 {
+            return Err(DekuError::Assertion(
+                format!("BDS 05 altitude {altitude} ft > 50 000 ft").into(),
+            ));
+        }
         Ok(Some(altitude))
     } else {
         // Gillham code encoding: 100 ft resolution, legacy Mode C
@@ -187,6 +196,12 @@ fn decode_ac12<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
         n = decode_id13(n);
         if let Ok(n) = gray2alt(n) {
             let altitude = n * 100;
+            #[cfg(feature = "bds-infer")]
+            if altitude > 50000 {
+                return Err(DekuError::Assertion(
+                    format!("BDS 05 altitude {altitude} ft > 50 000 ft").into(),
+                ));
+            }
             Ok(Some(altitude))
         } else {
             Ok(None)

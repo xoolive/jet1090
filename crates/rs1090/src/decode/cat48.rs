@@ -513,7 +513,7 @@ pub struct BdsRecord {
     pub decoded: Result<DecodedBds, DecodingError>,
 
     /// Inferred BDS codes from payload (using infer_bds)
-    #[deku(skip, default = "super::bds::infer_bds(&payload)")]
+    #[deku(skip, default = "super::bds::infer_bds(&payload, None)")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub inferred: Vec<DecodedBds>,
 }

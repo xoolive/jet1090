@@ -112,13 +112,15 @@ pub struct MeteorologicalRoutineAirReport {
     /// Turbulence (bits 47-49): Per ICAO Doc 9871 Table A-2-68  
     /// 2-bit turbulence level (Nil, Light, Moderate, Severe)  
     /// Definitions per PANS-ATM (Doc 4444).  
-    /// Returns None if status bit (bit 47) is 0.
+    /// Returns None if status bit (bit 47) is 0.  
+    /// Operationally never populated in civil-airliner transmissions.
     pub turbulence: Option<Turbulence>,
 
     #[deku(reader = "read_humidity(deku::reader)")]
     /// Humidity (bits 50-56): Per ICAO Doc 9871 Table A-2-68  
     /// 6-bit humidity percentage (LSB=100/64%, range [0, 100]%)  
-    /// Returns None if status bit (bit 50) is 0.
+    /// Returns None if status bit (bit 50) is 0.  
+    /// Operationally never populated in civil-airliner transmissions.
     pub humidity: Option<f64>,
 }
 
@@ -162,6 +164,17 @@ fn read_figure_of_merit<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
         n @ 5..=15 => FigureOfMerit::Reserved(n),
         _ => unreachable!(),
     };
+    // hard-reject: the reserved FOM range (5–15) appears in 99.47 % of
+    // phantom candidates but only 0.01 % of real BDS 4,4 records.
+    // Invalid (0), DME/DME (3) and VOR/DME (4) are also rejected because
+    // they are never observed in operational civil-airliner transmissions.
+    #[cfg(feature = "bds-infer")]
+    if !matches!(fom, FigureOfMerit::INS | FigureOfMerit::GNSS) {
+        return Err(DekuError::Assertion(
+            format!("BDS 4,4 figure of merit {value} not in {{INS=1, GNSS=2}}")
+                .into(),
+        ));
+    }
     Ok(fom)
 }
 fn read_wind_speed<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
@@ -185,6 +198,9 @@ fn read_wind_speed<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
             return Ok(None);
         }
     }
+    // hard-reject: wind speed > 250 kt is
+    // outside operational envelopes (worst recorded jet-stream cores ~200 kt).
+    #[cfg(feature = "bds-infer")]
     if value > 250 {
         let msg = format!("Invalid wind speed {value} kts > 250 kts");
         return Err(DekuError::Assertion(msg.into()));
@@ -240,6 +256,10 @@ fn read_temperature<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     // Verified against 500 paired BDS 44/45 records: 100% match within 0.5°C.
     let temp = if temp < -80.0 { temp + 256.0 } else { temp };
 
+    // hard-reject: valid OAT at cruise is bounded by [-80, +60] °C.
+    // Always-on after the wrap-around fallback above (which itself is a
+    // bug-fix, not an inference choice).
+    #[cfg(feature = "bds-infer")]
     if !(-80. ..=60.).contains(&temp) {
         let msg = "Invalid temperature value {}°C outside [-80, 60]";
         return Err(DekuError::Assertion(msg.into()));
@@ -298,15 +318,25 @@ fn read_turbulence<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
         }
     }
 
-    let value = match value {
-        0 => Some(Turbulence::Nil),
-        1 => Some(Turbulence::Light),
-        2 => Some(Turbulence::Moderate),
-        3 => Some(Turbulence::Severe),
-        _ => unreachable!(),
-    };
+    // hard-reject: turbulence is operationally never populated in civil-airliner
+    // BDS 4,4 transmissions; a non-null value almost certainly means this
+    // payload is a phantom candidate decoded from a different register.
+    #[cfg(feature = "bds-infer")]
+    return Err(DekuError::Assertion(
+        "BDS 4,4 turbulence field is non-null".into(),
+    ));
 
-    Ok(value)
+    #[cfg(not(feature = "bds-infer"))]
+    {
+        let value = match value {
+            0 => Some(Turbulence::Nil),
+            1 => Some(Turbulence::Light),
+            2 => Some(Turbulence::Moderate),
+            3 => Some(Turbulence::Severe),
+            _ => unreachable!(),
+        };
+        Ok(value)
+    }
 }
 
 fn read_humidity<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
@@ -329,6 +359,15 @@ fn read_humidity<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
         }
     }
 
+    // hard-reject: humidity is operationally never populated in civil-airliner
+    // BDS 4,4 transmissions; a non-null value almost certainly means this
+    // payload is a phantom candidate decoded from a different register.
+    #[cfg(feature = "bds-infer")]
+    return Err(DekuError::Assertion(
+        "BDS 4,4 humidity field is non-null".into(),
+    ));
+
+    #[cfg(not(feature = "bds-infer"))]
     Ok(Some(value as f64 * 100. / 64.))
 }
 

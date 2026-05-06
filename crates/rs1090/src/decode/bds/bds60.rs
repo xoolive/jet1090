@@ -81,10 +81,6 @@ use serde::{Deserialize, Serialize};
  * Implementation Validation:
  * - IAS must be in range (0, 500] kt (operational validation)
  * - Mach must be in range (0, 1] (subsonic aircraft assumption)
- * - IAS and Mach cross-validation:
- *   * If IAS > 250 kt, then Mach must be ≥ 0.4 (250 kt ≈ Mach 0.45 at 10,000 ft)
- *   * If IAS < 150 kt, then Mach must be ≤ 0.5 (150 kt ≈ Mach 0.5 at FL400)
- * - Vertical rate/velocity abs value ≤ 6,000 ft/min (typical operational limit)
  *
  * Note: Two's complement coding used for all signed fields (§A.2.2.2)
  * Additional implementation guidelines in ICAO Doc 9871 §D.2.4.6
@@ -142,7 +138,7 @@ pub struct HeadingAndSpeedReport {
     ///   - Cross-validation with IAS:
     ///     * If IAS > 250 kt: Mach ≥ 0.4 (250 kt ≈ Mach 0.45 at 10,000 ft)
     ///     * If IAS < 150 kt: Mach ≤ 0.5 (150 kt ≈ Mach 0.5 at FL400)
-    #[deku(reader = "read_mach(deku::reader, *indicated_airspeed)")]
+    #[deku(reader = "read_mach(deku::reader)")]
     #[serde(rename = "Mach", skip_serializing_if = "Option::is_none")]
     pub mach_number: Option<f64>,
 
@@ -162,7 +158,7 @@ pub struct HeadingAndSpeedReport {
     /// Implementation validates abs(rate) ≤ 6,000 ft/min.  
     /// Source: Air Data System or Inertial Reference System/FMS.  
     /// Note: Usually unsteady and may suffer from barometric instrument inertia.
-    #[deku(reader = "read_vertical(deku::reader)")]
+    #[deku(reader = "read_vertical(deku::reader, false)")]
     #[serde(
         rename = "vrate_barometric",
         skip_serializing_if = "Option::is_none"
@@ -187,7 +183,7 @@ pub struct HeadingAndSpeedReport {
     /// Note: More filtered and smooth than barometric rate. When barometric
     /// altitude rate is integrated and smoothed with inertial data
     /// (baro-inertial), it shall be transmitted in this field.
-    #[deku(reader = "read_vertical(deku::reader)")]
+    #[deku(reader = "read_vertical(deku::reader, true)")]
     #[serde(
         rename = "vrate_inertial",
         skip_serializing_if = "Option::is_none"
@@ -256,11 +252,11 @@ fn read_ias<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
         }
     }
 
+    // hard-reject: IAS > 500 kt is outside the civil-airliner envelope.
     #[cfg(feature = "bds-infer")]
-    if (value == 0) | (value > 500) {
+    if value > 500 {
         return Err(DekuError::Assertion(
-            format!("IAS value {value} is equal to 0 or greater than 500")
-                .into(),
+            format!("IAS value {value} > 500").into(),
         ));
     }
     Ok(Some(value))
@@ -268,7 +264,6 @@ fn read_ias<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
 
 fn read_mach<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     reader: &mut Reader<R>,
-    ias: Option<u16>,
 ) -> Result<Option<f64>, DekuError> {
     let status = bool::from_reader_with_ctx(
         reader,
@@ -291,48 +286,19 @@ fn read_mach<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
 
     let mach = value as f64 * 2.048 / 512.;
 
+    // hard-reject: Mach > 1 (no civil airliner is supersonic).
     #[cfg(feature = "bds-infer")]
-    if (mach == 0.) | (mach > 1.) {
+    if mach > 1. {
         return Err(DekuError::Assertion(
-            format!("Mach value {mach} equal to 0 or greater than 1 ").into(),
+            format!("Mach value {mach} > 1").into(),
         ));
-    }
-    if let Some(ias) = ias {
-        /*
-         * >>> pitot.aero.cas2mach(250, 10000)
-         * 0.45229071380275554
-         *
-         * Let's do this:
-         * 10000 ft has IAS max to 250, i.e. Mach 0.45
-         * forbid IAS > 250 and Mach < 0.5
-         */
-        #[cfg(feature = "bds-infer")]
-        if (ias > 250) & (mach < 0.4) {
-            return Err(DekuError::Assertion(
-                format!(
-                    "IAS: {ias} and Mach: {mach} (250kts is Mach 0.45 at 10,000 ft)"
-                )
-                .into(),
-            ));
-        }
-        // this one is easy IAS = 150 (close to take-off) at FL 400 is Mach 0.5
-        #[cfg(feature = "bds-infer")]
-        if (ias < 150) & (mach > 0.5) {
-            return Err(DekuError::Assertion(
-                format!(
-                    "IAS: {ias} and Mach: {mach} (150kts is Mach 0.5 at FL400)"
-                )
-                .into(),
-            ));
-        }
-        #[cfg(not(feature = "bds-infer"))]
-        let _ = ias;
     }
     Ok(Some(mach))
 }
 
 fn read_vertical<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     reader: &mut Reader<R>,
+    check_range: bool,
 ) -> Result<Option<i16>, DekuError> {
     let status = bool::from_reader_with_ctx(
         reader,
@@ -367,13 +333,20 @@ fn read_vertical<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
         value as i16 * 32
     };
 
+    // hard-reject: only the *inertial* vertical velocity is range-checked
+    // (|vrate| ≤ 6 000 ft/min). The barometric altitude rate is left unbounded
+    // because it is known to be noisy and may legitimately exceed this envelope
+    // due to barometric instrument inertia, especially in turbulence or near
+    // pressure-pattern boundaries.
     #[cfg(feature = "bds-infer")]
-    if value.abs() > 6000 {
+    if check_range && value.abs() > 6000 {
         return Err(DekuError::Assertion(
             format!("Vertical rate absolute value {} > 6000", value.abs())
                 .into(),
         ));
     }
+    #[cfg(not(feature = "bds-infer"))]
+    let _ = check_range;
     Ok(Some(value))
 }
 

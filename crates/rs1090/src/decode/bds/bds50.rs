@@ -138,8 +138,7 @@ pub struct TrackAndTurnReport {
     ///   - Special value: 0b111111111 = data not available
     ///
     /// Returns None if status bit is 0 or value = 0b111111111.
-    /// Implementation validates that sign agrees with roll_angle (left roll = left turn).
-    #[deku(reader = "read_rate(deku::reader, *roll_angle)")]
+    #[deku(reader = "read_rate(deku::reader)")]
     pub track_rate: Option<f64>,
 
     /// True Airspeed (bits 46-56): Per ICAO Doc 9871 Table A-2-80  
@@ -153,9 +152,8 @@ pub struct TrackAndTurnReport {
     ///   - Range: [0, 2046] kt
     ///
     /// Returns None if status bit is 0.
-    /// Implementation validates TAS ∈ [80, 500] kt and |GS - TAS| < 200 kt.
     /// Note: IAS (Indicated Airspeed) is available in BDS 6,0.
-    #[deku(reader = "read_tas(deku::reader, *groundspeed)")]
+    #[deku(reader = "read_tas(deku::reader)")]
     #[serde(rename = "TAS")]
     pub true_airspeed: Option<u16>,
 }
@@ -191,9 +189,13 @@ fn read_roll<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     } else {
         value as f64 * 45. / 256.
     };
-    if roll.abs() > 50. {
+    // hard-reject: |roll| > 45° is outside the civil-airliner envelope
+    // (typical bank limit is 30°, hard limit around 35–67° depending on
+    // aircraft / configuration).
+    #[cfg(feature = "bds-infer")]
+    if roll.abs() > 45. {
         return Err(DekuError::Assertion(
-            format!("Roll angle: abs({roll}) > 50").into(),
+            format!("Roll angle: abs({roll}) > 45").into(),
         ));
     }
     Ok(Some(roll))
@@ -261,10 +263,11 @@ fn read_groundspeed<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     }
 
     let gs = value * 2;
+    // hard-reject: groundspeed > 700 kt is outside the civil-airliner envelope.
     #[cfg(feature = "bds-infer")]
-    if gs > 600 {
+    if gs > 700 {
         return Err(DekuError::Assertion(
-            format!("Groundspeed value: {gs} > 600").into(),
+            format!("Groundspeed value: {gs} > 700").into(),
         ));
     }
     Ok(Some(gs))
@@ -272,7 +275,6 @@ fn read_groundspeed<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
 
 fn read_rate<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     reader: &mut Reader<R>,
-    roll: Option<f64>,
 ) -> Result<Option<f64>, DekuError> {
     let status = bool::from_reader_with_ctx(
         reader,
@@ -308,27 +310,11 @@ fn read_rate<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     };
     let rate = value as f64 * 8. / 256.;
 
-    if let Some(roll) = roll {
-        #[cfg(feature = "bds-infer")]
-        if roll * rate < 0. {
-            // signs must agree: left wing down = turn left
-            return Err(DekuError::Assertion(
-                format!(
-                    "Roll angle {roll} and track rate {rate} signs do not agree."
-                )
-                .into(),
-            ));
-        }
-        #[cfg(not(feature = "bds-infer"))]
-        let _ = roll;
-    }
-
     Ok(Some(rate))
 }
 
 fn read_tas<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
     reader: &mut Reader<R>,
-    gs: Option<u16>,
 ) -> Result<Option<u16>, DekuError> {
     let status = bool::from_reader_with_ctx(
         reader,
@@ -351,16 +337,14 @@ fn read_tas<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
 
     let tas = value * 2;
 
+    // hard-reject: TAS > 600 kt is outside the civil-airliner envelope.
     #[cfg(feature = "bds-infer")]
-    if let Some(gs) = gs {
-        if !(80..=500).contains(&tas) | ((gs as i16 - tas as i16).abs() > 200) {
-            return Err(DekuError::Assertion(format!(
-                "TAS = {tas} must be within [80, 500] and abs(GS - TAS) = {gs} < 200"
-            ).into()));
-        }
+    if tas > 600 {
+        return Err(DekuError::Assertion(
+            format!("TAS value: {tas} > 600").into(),
+        ));
     }
-    #[cfg(not(feature = "bds-infer"))]
-    let _ = gs;
+
     Ok(Some(tas))
 }
 

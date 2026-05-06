@@ -59,7 +59,7 @@ pub fn process_bds_decode(
         }
     } else {
         // Inference mode: try all BDS codes
-        let inferred = infer_bds(&payload);
+        let inferred = infer_bds(&payload, None);
         let mut decoded_map = serde_json::json!({});
 
         for decoded in inferred.iter() {
