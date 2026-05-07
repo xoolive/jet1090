@@ -46,3 +46,10 @@ See `--help` for more information.
     "geo_minus_baro": -175
   }
   ```
+
+- Decode files. The `file` subcommand accepts JSONL and Beast CSV inputs directly, including compressed `.gz` and `.7z` files such as `.jsonl.7z` and `.csv.7z`.
+
+  ```sh
+  decode1090 file flight.jsonl.7z --reference LFBO --output decoded.jsonl
+  decode1090 file raw_beast.csv.7z --reference LFPO --output decoded.jsonl
+  ```
