@@ -233,6 +233,14 @@ pub fn airline_registration_read<
 /// rejects on legitimate but uncommon registrations.
 #[cfg(feature = "bds-infer")]
 pub fn validate_registration(reg: &str, icao24: u32) -> bool {
+    // A leading placeholder is not a plausible registration prefix. Keeping
+    // such strings would be especially dangerous because BDS 2,1 is later
+    // treated as a high-confidence winner. Example false positive observed in
+    // Comm-B payloads: "#0NF" for a French address.
+    if reg.starts_with('#') {
+        return false;
+    }
+
     // Bucket 4: flight-callsign shape — checked first because it is
     // icao24-independent and very cheap.
     static CALLSIGN_RE: Lazy<Regex> =
@@ -266,21 +274,37 @@ pub fn validate_registration(reg: &str, icao24: u32) -> bool {
         return true; // malformed pattern → accept
     };
 
+    // Helper for country-prefix matches. Most country patterns are prefixes
+    // such as "^F-" (France), which become "^F" after dash stripping. In that
+    // case, matching the prefix alone is not enough: a registration must have
+    // at least one character after the country prefix. More specific patterns
+    // containing digit constraints (e.g. "^B-\\d{5}") are allowed to consume
+    // the whole candidate.
+    let country_match = |candidate: &str| -> bool {
+        let Some(m) = re.find(candidate) else {
+            return false;
+        };
+        if m.start() != 0 {
+            return false;
+        }
+        stripped_pattern.contains("\\d") || candidate.len() > m.end()
+    };
+
     // Bucket 1: direct country-prefix match.
-    if re.is_match(reg) {
+    if country_match(reg) {
         return true;
     }
 
     // Buckets 2 & 3: airline-prefix/suffix strip.
     for strip_len in [2usize, 3] {
         // Prefix strip
-        if reg.len() > strip_len && re.is_match(&reg[strip_len..]) {
+        if reg.len() > strip_len && country_match(&reg[strip_len..]) {
             return true;
         }
         // Suffix strip (only length 2)
         if strip_len == 2 && reg.len() > strip_len {
             let end = reg.len() - strip_len;
-            if re.is_match(&reg[..end]) {
+            if country_match(&reg[..end]) {
                 return true;
             }
         }
@@ -366,10 +390,17 @@ mod tests {
         assert!(validate_registration("BRB1672", 0x843a1b));
         assert!(validate_registration("CIB1800", 0x843a1b));
 
+        // Reject: leading placeholder and bare country prefix are too weak
+        // to be considered plausible registrations.
+        assert!(!validate_registration("#0NF", 0x39c422));
+        assert!(!validate_registration("F", 0x39c422));
+
         // Reject: clearly wrong country prefix for icao24 range
-        assert!(!validate_registration("XXXXXX", 0x843a1b)); // Japan range, non-JA
-                                                             // Reject: all-hash (would be caught by phi1 upstream, but validate_registration
-                                                             // also rejects non-matching strings)
+        // Japan range, non-JA
+        // Reject: all-hash (would be caught by the '#' count check upstream,
+        // but validate_registration also rejects non-matching strings)
+        assert!(!validate_registration("XXXXXX", 0x843a1b));
+
         assert!(!validate_registration("ZZZZZZ", 0x843a1b)); // Japan range, non-JA
     }
 }

@@ -337,11 +337,14 @@ fn read_tas<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
 
     let tas = value * 2;
 
-    // hard-reject: TAS > 600 kt is outside the civil-airliner envelope.
+    // hard-reject: a valid TAS below 80 kt is below the conservative
+    // airborne envelope for aircraft transmitting this report; unavailable
+    // TAS must be encoded with the status bit cleared and decoded as None.
+    // TAS > 600 kt is outside the civil-airliner envelope.
     #[cfg(feature = "bds-infer")]
-    if tas > 600 {
+    if !(80..=600).contains(&tas) {
         return Err(DekuError::Assertion(
-            format!("TAS value: {tas} > 600").into(),
+            format!("TAS value: {tas} outside [80, 600]").into(),
         ));
     }
 

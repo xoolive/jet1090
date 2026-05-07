@@ -169,9 +169,11 @@ async fn process_entries(
             _ => {}
         }
 
-        // Sanitize Comm-B messages
+        // Sanitize Comm-B messages and record surviving BDS registers
+        // for use as evidence in subsequent GICB bitmap validation.
         MessageProcessor::new(message, aircraft)
             .sanitize_commb()
+            .record_observed_bds()
             .finish();
 
         let json = match serde_json::to_string(&msg) {

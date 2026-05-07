@@ -22,7 +22,7 @@ use deku::prelude::*;
 use libm::fabs;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -75,6 +75,11 @@ fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 
 fn dist_haversine(pos1: &Position, pos2: &Position) -> f64 {
     haversine(pos1.latitude, pos1.longitude, pos2.latitude, pos2.longitude)
+}
+
+/// Great-circle distance between two positions in nautical miles.
+pub fn distance_nm(pos1: &Position, pos2: &Position) -> f64 {
+    dist_haversine(pos1, pos2) / 1.852
 }
 
 /// Check if a position is near any known airport
@@ -226,10 +231,100 @@ pub struct AircraftState {
     pos: Option<Position>,
     last_altitude: Option<i32>,
     pub airport: Option<String>,
+    /// BDS register codes the aircraft has been observed transmitting.
+    /// Updated after each successful (unambiguous) Comm-B decode.
+    pub seen_bds: BTreeSet<u8>,
+    /// Union of all BDS codes declared as supported (`true`) across every
+    /// surviving BDS 1,7 record for this aircraft.
+    pub supported_bds: BTreeSet<u8>,
+    /// Number of consistent BDS 1,7 records seen. Once this reaches the
+    /// threshold the capability set is considered stable enough to use as
+    /// a reject filter for unsupported BDS types.
+    pub bds17_count: u8,
     odd_ts: f64,
     odd_msg: Option<AirbornePosition>,
     even_ts: f64,
     even_msg: Option<AirbornePosition>,
+}
+
+impl AircraftState {
+    /// The most recent barometric altitude decoded for this aircraft, in feet.
+    pub fn last_altitude(&self) -> Option<i32> {
+        self.last_altitude
+    }
+
+    /// The most recent decoded position for this aircraft.
+    pub fn last_position(&self) -> Option<Position> {
+        self.pos
+    }
+
+    /// The set of BDS register codes this aircraft has been observed
+    /// transmitting. Used as evidence for the GICB bitmap tie-breaker.
+    pub fn seen_bds(&self) -> &BTreeSet<u8> {
+        &self.seen_bds
+    }
+
+    /// Record that a given BDS register code was observed for this aircraft.
+    pub fn record_bds(&mut self, code: u8) {
+        self.seen_bds.insert(code);
+    }
+
+    /// The minimum number of consistent BDS 1,7 records before the
+    /// capability set is used to reject unsupported BDS candidates.
+    const BDS17_STABILITY_THRESHOLD: u8 = 3;
+
+    /// Returns the set of BDS codes declared as supported across all
+    /// observed BDS 1,7 records, if enough records have been seen.
+    pub fn stable_supported_bds(&self) -> Option<&BTreeSet<u8>> {
+        if self.bds17_count >= Self::BDS17_STABILITY_THRESHOLD {
+            Some(&self.supported_bds)
+        } else {
+            None
+        }
+    }
+
+    /// Merge a new BDS 1,7 capability report into the per-aircraft
+    /// supported-BDS set. Call this after each unambiguous BDS 1,7 decode.
+    pub fn update_bds17(
+        &mut self,
+        report: &super::bds::bds17::CommonUsageGICBCapabilityReport,
+    ) {
+        // Union the true bits from this report into supported_bds.
+        if report.bds05 {
+            self.supported_bds.insert(0x05);
+        }
+        if report.bds06 {
+            self.supported_bds.insert(0x06);
+        }
+        if report.bds08 {
+            self.supported_bds.insert(0x08);
+        }
+        if report.bds09 {
+            self.supported_bds.insert(0x09);
+        }
+        if report.bds20 {
+            self.supported_bds.insert(0x20);
+        }
+        if report.bds21 {
+            self.supported_bds.insert(0x21);
+        }
+        if report.bds40 {
+            self.supported_bds.insert(0x40);
+        }
+        if report.bds44 {
+            self.supported_bds.insert(0x44);
+        }
+        if report.bds45 {
+            self.supported_bds.insert(0x45);
+        }
+        if report.bds50 {
+            self.supported_bds.insert(0x50);
+        }
+        if report.bds60 {
+            self.supported_bds.insert(0x60);
+        }
+        self.bds17_count = self.bds17_count.saturating_add(1);
+    }
 }
 
 /// NZ represents the number of latitude zones between the equator and a pole.
@@ -565,6 +660,9 @@ pub fn decode_position(
         pos: None,
         last_altitude: None,
         airport: None,
+        seen_bds: BTreeSet::new(),
+        supported_bds: BTreeSet::new(),
+        bds17_count: 0,
         odd_ts: timestamp,
         odd_msg: None,
         even_ts: timestamp,
@@ -664,6 +762,8 @@ pub fn decode_position(
                 latest.last_altitude = airborne.alt;
                 // Clear airport when airborne
                 latest.airport = None;
+                // Record that this aircraft transmits BDS 0,5
+                latest.record_bds(0x05);
                 // If necessary (according to the callback) update the reference position
                 if let Some(update_reference) = update_reference {
                     if update_reference(airborne) {
@@ -740,6 +840,8 @@ pub fn decode_position(
                 latest.timestamp = timestamp;
                 // Surface = on ground = no altitude
                 latest.last_altitude = None;
+                // Record that this aircraft transmits BDS 0,6
+                latest.record_bds(0x06);
                 // Find and store the nearest airport
                 if latest.airport.is_none() {
                     latest.airport =
@@ -747,7 +849,22 @@ pub fn decode_position(
                 }
             }
         }
-        _ => (),
+        _ => {
+            // For ADS-B message types other than BDS 0,5 and 0,6, record
+            // the BDS code in the aircraft's evidence set so the GICB
+            // bitmap tie-breaker can use it on subsequent messages.
+            let code: Option<u8> = match message {
+                ME::BDS08 { .. } => Some(0x08),
+                ME::BDS09(_) => Some(0x09),
+                ME::BDS61(_) => Some(0x61),
+                ME::BDS62(_) => Some(0x62),
+                ME::BDS65(_) => Some(0x65),
+                _ => None,
+            };
+            if let Some(code) = code {
+                latest.record_bds(code);
+            }
+        }
     }
 }
 

@@ -702,10 +702,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        // Sanitize Comm-B messages before updating snapshot
+        // Sanitize Comm-B messages and record surviving BDS registers
+        // for use as evidence in subsequent GICB bitmap validation.
         if let Some(message) = &mut msg.message {
-            MessageProcessor::new(message, &aircraft)
+            MessageProcessor::new(message, &mut aircraft)
                 .sanitize_commb()
+                .record_observed_bds()
                 .finish();
         }
 

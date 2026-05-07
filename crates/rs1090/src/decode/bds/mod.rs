@@ -14,7 +14,7 @@
 //!     BDS 05 altitude ≤ 50 000 ft;
 //!     BDS 40 selected MCP / FMS altitude ≤ 50 000 ft and barometric setting
 //!     in [800, 1200] mb;
-//!     BDS 50 groundspeed ≤ 700 kt, TAS ≤ 600 kt, |roll| ≤ 45°;
+//!     BDS 50 groundspeed ≤ 700 kt, TAS in [80, 600] kt, |roll| ≤ 45°;
 //!     BDS 60 IAS ≤ 500 kt, Mach ≤ 1, |vrate_inertial| ≤ 6 000 ft/min
 //!     (the *barometric* altitude rate is intentionally not bounded
 //!     because of known instrument inertia / barometric noise);
@@ -221,34 +221,39 @@ fn extract_tc(payload: &[u8]) -> u8 {
 /// cross-field penalty are accepted unconditionally (no signal). Without
 /// `bds-infer`, this function is the identity.
 #[inline]
-fn apply_score_gate(
-    result: Result<DecodedBds, DecodingError>,
-) -> Result<DecodedBds, DecodingError> {
+pub(crate) fn validate_score_gate(
+    decoded: &DecodedBds,
+) -> Result<(), DecodingError> {
     #[cfg(feature = "bds-infer")]
     {
-        match result {
-            Ok(decoded) => {
-                let mean = density::density_score(&decoded);
-                let pen = penalty::penalty(&decoded);
-                if mean.is_none() && pen == 0.0 {
-                    return Ok(decoded);
-                }
-                let score = mean.unwrap_or(0.0) + pen;
-                if score < density::DENSITY_THRESHOLD {
-                    Err(DecodingError::DecodingFailed(format!(
-                        "combined score {score:.2} below threshold {:.1}",
-                        density::DENSITY_THRESHOLD
-                    )))
-                } else {
-                    Ok(decoded)
-                }
-            }
-            Err(e) => Err(e),
+        let mean = density::density_score(decoded);
+        let pen = penalty::penalty(decoded);
+        if mean.is_none() && pen == 0.0 {
+            return Ok(());
+        }
+        let score = mean.unwrap_or(0.0) + pen;
+        if score < density::DENSITY_THRESHOLD {
+            Err(DecodingError::DecodingFailed(format!(
+                "combined score {score:.2} below threshold {:.1}",
+                density::DENSITY_THRESHOLD
+            )))
+        } else {
+            Ok(())
         }
     }
     #[cfg(not(feature = "bds-infer"))]
     {
-        result
+        let _ = decoded;
+        Ok(())
+    }
+}
+
+fn apply_score_gate(
+    result: Result<DecodedBds, DecodingError>,
+) -> Result<DecodedBds, DecodingError> {
+    match result {
+        Ok(decoded) => validate_score_gate(&decoded).map(|()| decoded),
+        Err(e) => Err(e),
     }
 }
 
@@ -628,7 +633,7 @@ pub fn infer_bds(payload: &[u8], icao24: Option<u32>) -> Vec<DecodedBds> {
     ];
     for bds_code in candidates {
         if let Ok(decoded) = decode_bds(payload, *bds_code) {
-            // P1: icao24-aware registration validation for BDS 2,1.
+            // icao24-aware registration validation for BDS 2,1.
             // Rejects phantom BDS 2,1 candidates whose decoded registration
             // does not match any of the four structural buckets for the
             // country inferred from the aircraft's ICAO address range.
@@ -646,13 +651,13 @@ pub fn infer_bds(payload: &[u8], icao24: Option<u32>) -> Vec<DecodedBds> {
         }
     }
 
-    // P2: winner-take-all.
+    // Winner-take-all.
     // BDS 1,0 / 2,0 / 3,0 are identified by a mandatory byte-header prefix
     // (0x10 / 0x20 / 0x30) that no other register produces, making them
-    // high-confidence identifications. BDS 2,1 after passing P1 joins this
-    // tier. When any such candidate is present, it evicts every other
-    // surviving candidate — phantom co-survivors on the same payload cannot
-    // be genuine.
+    // high-confidence identifications. BDS 2,1 is deliberately excluded from
+    // this tier: registration validation helps, but registration-looking
+    // phantoms are still common enough that they must not evict other
+    // surviving candidates.
     #[cfg(feature = "bds-infer")]
     {
         let has_winner = results.iter().any(|d| {
@@ -660,7 +665,6 @@ pub fn infer_bds(payload: &[u8], icao24: Option<u32>) -> Vec<DecodedBds> {
                 d,
                 DecodedBds::Bds10(_)
                     | DecodedBds::Bds20(_)
-                    | DecodedBds::Bds21(_)
                     | DecodedBds::Bds30(_)
             )
         });
@@ -670,7 +674,6 @@ pub fn infer_bds(payload: &[u8], icao24: Option<u32>) -> Vec<DecodedBds> {
                     d,
                     DecodedBds::Bds10(_)
                         | DecodedBds::Bds20(_)
-                        | DecodedBds::Bds21(_)
                         | DecodedBds::Bds30(_)
                 )
             });

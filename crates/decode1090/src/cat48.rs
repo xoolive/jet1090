@@ -4,6 +4,7 @@ use deku::DekuContainerRead;
 use glob::glob;
 use rayon::prelude::*;
 use rs1090::decode::cat48::Cat48Record;
+use rs1090::decode::cpr::Position;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -81,6 +82,7 @@ fn parse_asterix_data(data: &[u8]) -> (Vec<Cat48Record>, usize) {
 }
 
 /// Process ASTERIX CAT48 files and output JSON with optional filtering.
+#[allow(clippy::too_many_arguments)]
 pub async fn process_cat48(
     inputs: Vec<String>,
     output: Option<String>,
@@ -89,6 +91,7 @@ pub async fn process_cat48(
     with_bds: bool,
     exclude_zero: bool,
     filter_bds: Option<String>,
+    radar: Option<Position>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse BDS filter codes
     let bds_filter: Option<Vec<u8>> = filter_bds.map(|s| {
@@ -237,6 +240,8 @@ pub async fn process_cat48(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
+
+    rs1090::decode::cat48::refine_inferred_bds(&mut all_records, radar);
 
     if array {
         // Output as single JSON array

@@ -36,11 +36,14 @@
 //! | 28 | RE | Reserved Expansion Field | Explicit |
 
 use super::bds::{
-    bds08::callsign_read, decode_payload, DecodedBds, DecodingError,
+    bds08::callsign_read, decode_payload, infer_bds, DecodedBds, DecodingError,
 };
+use super::cpr::Position;
 use super::ICAO;
 use deku::prelude::*;
 use serde::{Serialize, Serializer};
+#[cfg(feature = "bds-infer")]
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Serialize a u8 as a lowercase hex string (e.g., 0x40 → "40")
 fn serialize_u8_as_hex<S: Serializer>(v: &u8, s: S) -> Result<S::Ok, S::Error> {
@@ -516,6 +519,207 @@ pub struct BdsRecord {
     #[deku(skip, default = "super::bds::infer_bds(&payload, None)")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub inferred: Vec<DecodedBds>,
+}
+
+#[cfg(feature = "bds-infer")]
+#[derive(Default)]
+struct Cat48AircraftState {
+    seen: BTreeSet<u8>,
+}
+
+#[cfg(feature = "bds-infer")]
+impl Cat48AircraftState {
+    fn record(&mut self, code: u8) {
+        if !matches!(code, 0x17..=0x19) {
+            self.seen.insert(code);
+        }
+    }
+}
+
+#[cfg(feature = "bds-infer")]
+fn destination_position(
+    start: Position,
+    bearing_deg: f64,
+    distance_nm: f64,
+) -> Position {
+    let lat1 = start.latitude.to_radians();
+    let lon1 = start.longitude.to_radians();
+    let bearing = bearing_deg.to_radians();
+    let angular = distance_nm / 3440.065_f64;
+    let lat2 = (lat1.sin() * angular.cos()
+        + lat1.cos() * angular.sin() * bearing.cos())
+    .asin();
+    let lon2 = lon1
+        + (bearing.sin() * angular.sin() * lat1.cos())
+            .atan2(angular.cos() - lat1.sin() * lat2.sin());
+    Position {
+        latitude: lat2.to_degrees(),
+        longitude: (lon2.to_degrees() + 540.0) % 360.0 - 180.0,
+    }
+}
+
+#[cfg(feature = "bds-infer")]
+fn measured_position(
+    record: &Cat48Record,
+    radar: Position,
+) -> Option<Position> {
+    let measured = record.measured_position.as_ref()?;
+    let altitude_nm = f64::from(record.flight_level?) / 6076.12_f64;
+    let range2 = measured.rho * measured.rho;
+    let altitude2 = altitude_nm * altitude_nm;
+    if range2 <= altitude2 {
+        return None;
+    }
+    Some(destination_position(
+        radar,
+        measured.theta,
+        (range2 - altitude2).sqrt(),
+    ))
+}
+
+#[cfg(feature = "bds-infer")]
+fn gicb_consistent(candidate: &DecodedBds, seen: &BTreeSet<u8>) -> bool {
+    match candidate {
+        DecodedBds::Bds17(b) => {
+            if seen.contains(&0x05) && !b.bds05 {
+                return false;
+            }
+            if seen.contains(&0x06) && !b.bds06 {
+                return false;
+            }
+            if seen.contains(&0x08) && !b.bds08 {
+                return false;
+            }
+            if seen.contains(&0x09) && !b.bds09 {
+                return false;
+            }
+            if seen.contains(&0x20) && !b.bds20 {
+                return false;
+            }
+            if seen.contains(&0x40) && !b.bds40 {
+                return false;
+            }
+            if seen.contains(&0x50) && !b.bds50 {
+                return false;
+            }
+            if seen.contains(&0x60) && !b.bds60 {
+                return false;
+            }
+            true
+        }
+        DecodedBds::Bds18(b) => {
+            if seen.contains(&0x05) && !b.bds05 {
+                return false;
+            }
+            if seen.contains(&0x06) && !b.bds06 {
+                return false;
+            }
+            if seen.contains(&0x08) && !b.bds08 {
+                return false;
+            }
+            if seen.contains(&0x09) && !b.bds09 {
+                return false;
+            }
+            if seen.contains(&0x10) && !b.bds10 {
+                return false;
+            }
+            if seen.contains(&0x20) && !b.bds20 {
+                return false;
+            }
+            if seen.contains(&0x21) && !b.bds21 {
+                return false;
+            }
+            if seen.contains(&0x30) && !b.bds30 {
+                return false;
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
+#[cfg(feature = "bds-infer")]
+fn is_gicb(candidate: &DecodedBds) -> bool {
+    matches!(
+        candidate,
+        DecodedBds::Bds17(_) | DecodedBds::Bds18(_) | DecodedBds::Bds19(_)
+    )
+}
+
+#[cfg(feature = "bds-infer")]
+fn filter_bds05(
+    candidate: &DecodedBds,
+    altitude: Option<i32>,
+    reference: Option<Position>,
+) -> bool {
+    let DecodedBds::Bds05(msg) = candidate else {
+        return true;
+    };
+    if let (Some(candidate_alt), Some(reference_alt)) = (msg.alt, altitude) {
+        if (candidate_alt - reference_alt).abs() > 100 {
+            return false;
+        }
+    }
+    if let Some(reference) = reference {
+        if let Some(position) = super::cpr::airborne_position_with_reference(
+            msg,
+            reference.latitude,
+            reference.longitude,
+        ) {
+            return super::cpr::distance_nm(&position, &reference) <= 5.0;
+        }
+        return false;
+    }
+    true
+}
+
+#[cfg(feature = "bds-infer")]
+pub fn refine_inferred_bds(
+    records: &mut [Cat48Record],
+    radar: Option<Position>,
+) {
+    let mut aircraft: BTreeMap<ICAO, Cat48AircraftState> = BTreeMap::new();
+    for record in records {
+        let icao = record.aircraft_address;
+        let reference =
+            radar.and_then(|radar| measured_position(record, radar));
+        let seen = icao
+            .and_then(|icao| {
+                aircraft.get(&icao).map(|state| state.seen.clone())
+            })
+            .unwrap_or_default();
+
+        if let Some(mb) = &mut record.mode_s_mb_data {
+            for bds_record in &mut mb.records {
+                bds_record.inferred =
+                    infer_bds(&bds_record.payload, icao.map(|addr| addr.0))
+                        .into_iter()
+                        .filter(|candidate| {
+                            filter_bds05(
+                                candidate,
+                                record.flight_level,
+                                reference,
+                            )
+                        })
+                        .collect();
+
+                if bds_record.inferred.len() > 1
+                    && bds_record.inferred.iter().any(|c| !is_gicb(c))
+                {
+                    bds_record
+                        .inferred
+                        .retain(|candidate| gicb_consistent(candidate, &seen));
+                }
+            }
+        }
+
+        if let (Some(icao), Some(mb)) = (icao, &record.mode_s_mb_data) {
+            let state = aircraft.entry(icao).or_default();
+            for bds_record in &mb.records {
+                state.record(bds_record.bds_code);
+            }
+        }
+    }
 }
 
 impl BdsRecord {

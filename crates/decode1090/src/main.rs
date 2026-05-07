@@ -66,6 +66,10 @@ enum Commands {
         /// Comma-separated hex codes, e.g. "44,45" or "40,50,60"
         #[arg(long)]
         filter_bds: Option<String>,
+
+        /// Radar position used to cross-check locally decoded CPR candidates
+        #[arg(long)]
+        radar: Option<Position>,
     },
     /// Decode BDS payload (7 bytes)
     Bds {
@@ -120,6 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             with_bds,
             exclude_zero,
             filter_bds,
+            radar,
         }) => {
             return cat48::process_cat48(
                 inputs,
@@ -129,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 with_bds,
                 exclude_zero,
                 filter_bds,
+                radar,
             )
             .await;
         }
