@@ -227,7 +227,6 @@ pub struct TargetStateAndStatusInformation {
     ///   - 0 = barometric altitude not cross-checked with another source
     ///   - 1 = barometric altitude cross-checked with another pressure source
     #[deku(bits = "1")]
-    #[serde(skip)]
     pub nic_baro: bool,
 
     /// SIL (bits 45-46): Per DO-260B §2.2.3.2.7.1.3.10  
