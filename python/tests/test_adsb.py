@@ -53,6 +53,17 @@ def test_adsb_emergency() -> None:
     assert msg["squawk"] == "6513"
 
 
+def test_adsb_operational_status_version() -> None:
+    msg = rs1090.decode("903a33fff90200040049001ea8e2")
+    assert rs1090.is_df18(msg)
+    assert rs1090.is_bds65(msg)
+    assert msg["version"] == 2
+
+    bds65 = rs1090.decode_bds65("903a33fff90200040049001ea8e2")
+    assert bds65["version"] == 2
+    assert bds65["NACp"] == 9
+
+
 def test_adsb_target_state_status() -> None:
     msg = rs1090.decode("8DA05629EA21485CBF3F8CADAEEB")
     assert rs1090.is_df17(msg)

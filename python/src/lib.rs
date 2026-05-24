@@ -274,7 +274,7 @@ fn decode_bds65(msg: String) -> PyResult<Vec<u8>> {
     let enum_id = &bytes[4] & 0b111;
     match (tc, enum_id) {
         (31, id) if id < 2 => {
-            match AircraftOperationStatus::from_bytes((&bytes[4..], 0)) {
+            match AircraftOperationStatus::from_bytes((&bytes[4..], 5)) {
                 Ok((_, msg)) => {
                     let pkl =
                         serde_pickle::to_vec(&msg, Default::default()).unwrap();

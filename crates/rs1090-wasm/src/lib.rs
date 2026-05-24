@@ -269,7 +269,7 @@ pub fn decode_bds65(msg: &str) -> Result<JsValue, JsError> {
     let enum_id = &bytes[4] & 0b111;
     match (tc, enum_id) {
         (31, id) if id < 2 => {
-            match AircraftOperationStatus::from_bytes((&bytes[4..], 0)) {
+            match AircraftOperationStatus::from_bytes((&bytes[4..], 5)) {
                 Ok((_, msg)) => {
                     let map_result = serde_wasm_bindgen::to_value(&msg)?;
                     Ok(map_result)

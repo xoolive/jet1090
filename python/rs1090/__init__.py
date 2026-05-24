@@ -130,6 +130,7 @@ __all__ = [
     "decode_bds45",
     "decode_bds50",
     "decode_bds60",
+    "decode_bds65",
     "flarm",
     "is_bds05",
     "is_bds06",

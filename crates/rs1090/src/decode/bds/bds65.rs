@@ -1,4 +1,5 @@
 use deku::prelude::*;
+use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -369,7 +370,7 @@ impl fmt::Display for OperationalMode {
 /// (specification defined in RTCA document DO-260). Version 1 was introduced
 /// around 2008 (DO-260A), and version 2 around 2012 (DO-260B). Version 3 is
 /// currently being developed.
-#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Deserialize, DekuRead, Copy, Clone)]
 #[deku(id_type = "u8", bits = "3")]
 #[serde(tag = "version")]
 pub enum ADSBVersionAirborne {
@@ -388,6 +389,49 @@ pub enum ADSBVersionAirborne {
     #[deku(id_pat = "3..=7")]
     #[serde(rename = "3to7")]
     Reserved { id: u8 },
+}
+
+impl Serialize for ADSBVersionAirborne {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::DOC9871AppendixA(_) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("version", &0u8)?;
+                map.end()
+            }
+            Self::DOC9871AppendixB(v1) => {
+                let mut map = serializer.serialize_map(Some(7))?;
+                map.serialize_entry("version", &1u8)?;
+                map.serialize_entry("NICs", &v1.nic_s)?;
+                map.serialize_entry("NACp", &v1.nac_p)?;
+                map.serialize_entry("BAQ", &v1.barometric_altitude_quality)?;
+                map.serialize_entry("SIL", &v1.sil)?;
+                map.serialize_entry("BAI", &v1.barometric_altitude_integrity)?;
+                map.serialize_entry("HRD", &v1.horizontal_reference_direction)?;
+                map.end()
+            }
+            Self::DOC9871AppendixC(v2) => {
+                let mut map = serializer.serialize_map(Some(8))?;
+                map.serialize_entry("version", &2u8)?;
+                map.serialize_entry("NICa", &v2.nic_a)?;
+                map.serialize_entry("NACp", &v2.nac_p)?;
+                map.serialize_entry("GVA", &v2.geometry_vertical_accuracy)?;
+                map.serialize_entry("SIL", &v2.sil)?;
+                map.serialize_entry("BAI", &v2.barometric_altitude_integrity)?;
+                map.serialize_entry("HRD", &v2.horizontal_reference_direction)?;
+                map.serialize_entry("SILs", &v2.sil_s)?;
+                map.end()
+            }
+            Self::Reserved { id } => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("version", id)?;
+                map.end()
+            }
+        }
+    }
 }
 
 impl ADSBVersionAirborne {
@@ -550,7 +594,7 @@ pub struct AirborneV2 {
 /// (specification defined in RTCA document DO-260).  
 /// Version 1 was introduced around 2008 (DO-260A), and version 2 around 2012 (DO-260B).
 /// Version 3 is currently being developed.
-#[derive(Debug, PartialEq, Serialize, Deserialize, DekuRead, Copy, Clone)]
+#[derive(Debug, PartialEq, Deserialize, DekuRead, Copy, Clone)]
 #[deku(id_type = "u8", bits = "3")]
 #[serde(tag = "version")]
 pub enum ADSBVersionSurface {
@@ -573,6 +617,47 @@ pub enum ADSBVersionSurface {
 
 pub fn serde_default_adsb_version_surface() -> ADSBVersionSurface {
     ADSBVersionSurface::DOC9871AppendixA(Empty {})
+}
+
+impl Serialize for ADSBVersionSurface {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::DOC9871AppendixA(_) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("version", &0u8)?;
+                map.end()
+            }
+            Self::DOC9871AppendixB(v1) => {
+                let mut map = serializer.serialize_map(Some(6))?;
+                map.serialize_entry("version", &1u8)?;
+                map.serialize_entry("NICs", &v1.nic_s)?;
+                map.serialize_entry("NACp", &v1.nac_p)?;
+                map.serialize_entry("SIL", &v1.sil)?;
+                map.serialize_entry("TAH", &v1.track_angle_or_heading)?;
+                map.serialize_entry("HRD", &v1.horizontal_reference_direction)?;
+                map.end()
+            }
+            Self::DOC9871AppendixC(v2) => {
+                let mut map = serializer.serialize_map(Some(7))?;
+                map.serialize_entry("version", &2u8)?;
+                map.serialize_entry("NICa", &v2.nic_a)?;
+                map.serialize_entry("NACp", &v2.nac_p)?;
+                map.serialize_entry("SIL", &v2.sil)?;
+                map.serialize_entry("TAH", &v2.track_angle_or_heading)?;
+                map.serialize_entry("HRD", &v2.horizontal_reference_direction)?;
+                map.serialize_entry("SILs", &v2.sil_supplement)?;
+                map.end()
+            }
+            Self::Reserved { id } => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("version", id)?;
+                map.end()
+            }
+        }
+    }
 }
 
 impl ADSBVersionSurface {
@@ -755,6 +840,9 @@ mod tests {
                 } else {
                     panic!("Expected version 2");
                 }
+
+                let json = serde_json::to_value(surface).unwrap();
+                assert_eq!(json["version"], 2);
 
                 // Test Display implementation
                 let display = format!("{}", surface.version);

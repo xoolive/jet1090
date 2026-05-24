@@ -304,7 +304,7 @@ class DF17_BDS65(TypedDict):
     df: Literal["17"]
     icao24: str
     bds: Literal["65"]
-    version: Literal["1", "2"]
+    version: Literal[0, 1, 2, 3, 4, 5, 6, 7]
     # NIC supplement A
     NICa: int
     # NIC Supplement bit (NICs)
@@ -410,7 +410,7 @@ class DF18_BDS65(TypedDict):
     ]
     icao24: str
     bds: Literal["65"]
-    version: Literal["1", "2"]
+    version: Literal[0, 1, 2, 3, 4, 5, 6, 7]
     # NIC supplement A
     NICa: int
     # NIC Supplement bit (NICs)
