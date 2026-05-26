@@ -112,9 +112,10 @@ pub async fn handle_rejection(
         code = StatusCode::NOT_FOUND;
         message = "Route not found, try one of /,\n\
             /all,\n\
+            /icao24,\n\
             /track?icao24={icao24},\n\
             /sensors or\n\
-            /airport?q={string}";
+            /airports?q={string}";
     } else if err.find::<warp::reject::MethodNotAllowed>().is_some() {
         code = StatusCode::METHOD_NOT_ALLOWED;
         message = "Only GET queries are supported";
@@ -150,9 +151,9 @@ pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
         ))
     });
 
-    let shared_home = shared.clone();
-    let icao24 = warp::path::end()
-        .and(warp::any().map(move || shared_home.clone()))
+    let shared_icao24 = shared.clone();
+    let icao24 = warp::path("icao24")
+        .and(warp::any().map(move || shared_icao24.clone()))
         .and_then(
             |shared: Arc<SharedState>| async move { icao24(&shared).await },
         );

@@ -81,9 +81,12 @@ If a `--serve-port` option is set, a REST API is set on `0.0.0.0` on the port of
 
 The following endpoint are provided:
 
-- `/`: returns a list of all visible `icao24` identifiers
+- `/`: returns an index page with the available routes
+- `/icao24`: returns a list of all visible `icao24` identifiers
 - `/all`: returns a list of all state vectors (the last valid field for each aircraft)
 - `/track?icao24=xxx`: returns a list of all received messages for a given aircraft.
+- `/sensors`: returns information about all sensors
+- `/airports?q=xxx`: returns a list of airports matching the query string
 
 !!! warning
 
