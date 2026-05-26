@@ -397,7 +397,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         0
     };
 
-    let mut events = tui::EventHandler::new(width);
+    let mut events = if terminal.is_some() {
+        Some(tui::EventHandler::new(width))
+    } else {
+        None
+    };
 
     let mut references = BTreeMap::<u64, Option<Position>>::new();
     let mut sensors = BTreeMap::<u64, Sensor>::new();
@@ -484,6 +488,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(mut terminal) = terminal {
         let app_tui_task = app_tui.clone();
         let shared_tui = shared.clone();
+        let mut events =
+            events.take().expect("event handler in interactive mode");
         tokio::spawn(async move {
             loop {
                 if let Ok(event) = events.next().await {
