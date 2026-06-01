@@ -2583,7 +2583,7 @@ dependencies = [
  "rs1090",
  "serde",
  "serde_json",
- "soapysdr 0.5.0",
+ "soapysdr 0.5.1",
  "tokio",
  "toml",
  "tracing",
@@ -4309,7 +4309,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "soapysdr 0.5.0",
+ "soapysdr 0.5.1",
  "ssh2-config",
  "tokio",
  "tokio-tungstenite 0.28.0",
@@ -4796,9 +4796,9 @@ dependencies = [
 
 [[package]]
 name = "soapysdr"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69408a5363f264bdb91d01021a0d88944d6341bd40e90b234cd7533b99623dff"
+checksum = "a18cfe7033985b73ab920b34b79ea333ac9271c64910023054efefd8a5f08088"
 dependencies = [
  "log",
  "num-complex",
