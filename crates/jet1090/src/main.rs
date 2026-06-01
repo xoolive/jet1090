@@ -179,6 +179,14 @@ struct Options {
     #[arg(long, value_name = "SECONDS")]
     #[serde(default)]
     redis_retry_interval: Option<u64>,
+
+    /// Insert messages into a PostgreSQL database
+    #[arg(long, value_name = "POSTGRES URL")]
+    postgres_url: Option<String>,
+
+    /// PostgreSQL table for the messages, default to "jet1090"
+    #[arg(long, value_name = "POSTGRES TABLE")]
+    postgres_table: Option<String>,
 }
 
 #[tokio::main]
@@ -273,6 +281,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cli_options.redis_retry_interval.is_some() {
         options.redis_retry_interval = cli_options.redis_retry_interval;
     }
+    if cli_options.postgres_url.is_some() {
+        options.postgres_url = cli_options.postgres_url;
+    }
+    if cli_options.postgres_table.is_some() {
+        options.postgres_table = cli_options.postgres_table;
+    }
     if cli_options.stats {
         options.stats = cli_options.stats;
     }
@@ -335,6 +349,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let redis_topic = options.redis_topic.unwrap_or("jet1090".to_string());
     let redis_retry_interval =
         Duration::from_secs(options.redis_retry_interval.unwrap_or(5));
+
+    let postgres_table =
+        options.postgres_table.unwrap_or("jet1090".to_string());
+    let postgres_pool = match options.postgres_url {
+        Some(url) => {
+            let pool = sqlx::PgPool::connect(&url)
+                .await
+                .expect("Unable to connect to the PostgreSQL server");
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "CREATE TABLE IF NOT EXISTS {postgres_table} (\
+                    id BIGSERIAL PRIMARY KEY, \
+                    \"timestamp\" DOUBLE PRECISION NOT NULL, \
+                    icao24 TEXT, \
+                    df TEXT, \
+                    message JSONB NOT NULL\
+                )"
+            )))
+            .execute(&pool)
+            .await
+            .expect("Unable to create the PostgreSQL table");
+            Some(pool)
+        }
+        None => None,
+    };
 
     let filters = filters::Filters {
         df_filter: options
@@ -747,6 +785,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await;
                 }
+
+                if let Some(pool) = &postgres_pool {
+                    insert_message(pool, &postgres_table, &msg).await;
+                }
             }
         }
 
@@ -970,6 +1012,41 @@ async fn publish_with_retry(
                 sleep(retry_interval).await;
             }
         }
+    }
+}
+
+/// Store one decoded message in the PostgreSQL table.
+///
+/// The full message goes into the JSONB column; `timestamp`, `icao24` and
+/// `df` get their own columns so they're easy to filter on. A failed insert
+/// is logged and skipped, so a flaky database never stalls the decoder.
+async fn insert_message(pool: &sqlx::PgPool, table: &str, msg: &TimedMessage) {
+    let value = match serde_json::to_value(msg) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!(error = %err, "PostgreSQL: failed to serialize message");
+            return;
+        }
+    };
+    let icao24 = value
+        .get("icao24")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let df = value.get("df").and_then(|v| v.as_str()).map(str::to_string);
+
+    let query = format!(
+        "INSERT INTO {table} (\"timestamp\", icao24, df, message) \
+         VALUES ($1, $2, $3, $4)"
+    );
+    if let Err(err) = sqlx::query(sqlx::AssertSqlSafe(query))
+        .bind(msg.timestamp)
+        .bind(icao24)
+        .bind(df)
+        .bind(value)
+        .execute(pool)
+        .await
+    {
+        warn!(error = %err, "PostgreSQL insert failed");
     }
 }
 

@@ -19,7 +19,7 @@ Built on the :simple-rust: [**rs1090**](https://crates.io/crates/rs1090) library
   optimized for real-time processing through Rust’s speed and efficiency;
 - **Input options**: compatible with Beast format, RTL-SDR dongles, and the SeRo gRPC API  
   (_contributions for more input formats is welcome_);
-- **Output options**: files (JSON), a text user interface, REST, WebSocket, Redis pub/sub, etc.  
+- **Output options**: files (JSON), a text user interface, REST, WebSocket, Redis pub/sub, PostgreSQL, etc.  
   (_contributions for more output formats is welcome_);
 - Filtering capabilities common to all output options  
   include Downlink Format (DF), receiver identifier (custom), and ICAO24 aircraft transponder codes.

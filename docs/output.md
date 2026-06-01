@@ -130,3 +130,41 @@ Issues: https://github.com/laixintao/iredis/issues
 127.0.0.1:6379> psubscribe jet1090
 # messages should be incoming here
 ```
+
+## PostgreSQL
+
+If the `--postgres-url` is set, every message is inserted into a PostgreSQL database.
+
+The default table is `jet1090` but it can be overriden with the `--postgres-table` option. The table is created automatically if it does not exist, with the following schema:
+
+| column      | type               | description                                         |
+| ----------- | ------------------ | --------------------------------------------------- |
+| `id`        | `BIGSERIAL`        | primary key                                         |
+| `timestamp` | `DOUBLE PRECISION` | reception timestamp                                 |
+| `icao24`    | `TEXT`             | aircraft address                                    |
+| `df`        | `TEXT`             | downlink format                                     |
+| `message`   | `JSONB`            | the full decoded message (same content as `.jsonl`) |
+
+You may run a PostgreSQL server as a Docker or podman instance:
+
+=== "Docker"
+
+    ```sh
+    docker run -d --rm --name postgres -p 5432:5432 -e POSTGRES_PASSWORD=jet1090 -e POSTGRES_DB=jet1090 postgres:latest
+    ```
+
+=== "podman"
+
+    ```sh
+    podman run -d --rm --name postgres -p 5432:5432 -e POSTGRES_PASSWORD=jet1090 -e POSTGRES_DB=jet1090 postgres:latest
+    ```
+
+You may then query the incoming messages with any PostgreSQL client, for instance:
+
+```sh
+$ psql postgres://postgres:jet1090@localhost/jet1090
+jet1090=# select "timestamp", icao24, df from jet1090 order by id desc limit 5;
+-- messages should be incoming here
+```
+
+The `message` column is queryable as JSONB, e.g. `select message->>'altitude' from jet1090 where icao24 = '...';`
