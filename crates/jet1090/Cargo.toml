@@ -33,7 +33,7 @@ dotenv = "0.15.0"
 futures = "0.3.31"
 futures-util = "0.3.32"
 hex = "0.4.3"
-keepawake = "0.5.1"
+keepawake = "0.6.0"
 ratatui = "0.30.0"
 redis = { version = "1.0.4", features = ["tokio-comp"] }
 regex = "1.12.2"
