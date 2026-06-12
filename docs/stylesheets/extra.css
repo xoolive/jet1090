@@ -1,0 +1,10 @@
+/* Match the MkDocs Material header to the blue used in docs/images/favicon.png. */
+[data-md-color-primary="jet1090"] {
+  --md-primary-fg-color: #485e85;
+  --md-primary-fg-color--light: #5f759b;
+  --md-primary-fg-color--dark: #35496e;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.7);
+  --md-footer-bg-color: #485e85;
+  --md-footer-bg-color--dark: #35496e;
+}

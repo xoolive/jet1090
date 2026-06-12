@@ -27,20 +27,22 @@ theme:
     - search.suggest
   palette:
     - media: "(prefers-color-scheme)"
+      primary: jet1090
+      accent: jet1090
       toggle:
         icon: material/link
         name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
+      primary: jet1090
+      accent: jet1090
       toggle:
         icon: material/toggle-switch
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: black
-      accent: indigo
+      primary: jet1090
+      accent: jet1090
       toggle:
         icon: material/toggle-switch-off
         name: Switch to system preference
@@ -49,6 +51,9 @@ theme:
     code: Roboto Mono
   icon:
     repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
 
 plugins:
   - search
