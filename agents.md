@@ -11,7 +11,7 @@ This guide provides comprehensive instructions for AI agents working on the jet1
 
 ## Project structure
 
-```
+```text
 jet1090/
 ├── crates/
 │   ├── rs1090/          # Core decoding library (Mode S, ADS-B, FLARM)
@@ -46,6 +46,7 @@ cargo build --profile dist --all-features
 ```
 
 **Build profiles:**
+
 - `--release`: Thin LTO for fast development iteration (~15-16 MB with symbols, 47s incremental)
 - `--profile dist`: Full LTO for production releases (12 MB stripped, 94s incremental)
   - Used automatically by `cargo dist` for releases
@@ -65,10 +66,12 @@ cargo build -p jet1090 --profile dist
 # Python bindings (requires uv)
 cd python
 uv sync --all-extras --dev
-maturin develop
+uv run maturin develop
 
 # WebAssembly bindings
 cd crates/rs1090-wasm
+just pkg                    # Build bundled, web, and nodejs packages
+# or, for a single target:
 wasm-pack build --target web
 ```
 
@@ -110,7 +113,7 @@ cargo bench --bench long_flight
 
 # Python benchmarks
 cd python/examples
-python benchmark.py
+uv run benchmark.py
 ```
 
 ### Python tests
@@ -125,10 +128,19 @@ uv run pytest -v             # Verbose output
 ### WebAssembly tests
 
 ```sh
-cd crates/rs1090-wasm/tests
+cd crates/rs1090-wasm
+just pkg
+cd tests
 npm install
 npm test
 ```
+
+The release workflow publishes `rs1090-wasm` to npm from `.github/workflows/wasm.yml` using npm Trusted Publishing/OIDC (`NPM_CONFIG_PROVENANCE=true`). If npm publishing fails with a 404/permission error on a tag, check the npm package trusted publisher settings:
+
+- Publisher: GitHub Actions
+- Repository: `xoolive/jet1090`
+- Workflow filename: `wasm.yml`
+- Environment: empty unless the workflow is changed to use one
 
 ## Code quality and style
 
@@ -165,9 +177,8 @@ uv run ruff check            # Linting
 uv run ruff format           # Formatting
 uv run ruff format --check   # Check formatting without modifying
 
-# Type checking (run both)
-uvx ty check
-uv run mypy
+# Type checking
+uv run ty check rs1090
 ```
 
 ### Markdown
@@ -203,7 +214,7 @@ uvx --with "mkdocs-material[imaging]" mkdocs serve  # Local preview
 uvx --with "mkdocs-material[imaging]" mkdocs build -d site  # Build static site
 ```
 
-Site deploys automatically to https://mode-s.org/jet1090 on push to master.
+Site deploys automatically to <https://mode-s.org/jet1090> on push to master.
 
 **Rust API docs:**
 
@@ -211,7 +222,7 @@ Site deploys automatically to https://mode-s.org/jet1090 on push to master.
 cargo doc --all-features --no-deps --open
 ```
 
-Published automatically to https://docs.rs/rs1090
+Published automatically to <https://docs.rs/rs1090>
 
 ### Documentation structure
 
@@ -222,12 +233,15 @@ Published automatically to https://docs.rs/rs1090
 
 ## Code analysis
 
-- Put any markdown file with summaries and explanations in the analysis/ folder
+- Put concise, durable markdown summaries in the `analysis/` folder.
+- Do not keep large generated data, temporary scripts, or one-off investigation logs there once the lesson has been captured.
+- Current retained analysis should stay focused; for example, `analysis/demod6000-lessons.md` captures the durable demodulator lessons.
 
 ## Release
 
-- Ensure latest commmit on master has no failing CI actions
+- Ensure latest commit on master has no failing CI actions
 - `cargo release [patch,minor]`
+- Release executables are built by cargo-dist workflows; Python wheels are built by maturin workflows; WebAssembly npm publishing uses the Trusted Publisher setup described above.
 
 ## Decoding specifications and test data
 
@@ -276,7 +290,7 @@ Do not edit or uncompress files in place but you may do that in /tmp folder if n
 
 **Commit message format:**
 
-```
+```text
 type: brief description (imperative mood)
 
 Optional longer explanation of what changed and why.

@@ -1,6 +1,12 @@
+<div align="center">
+  <img src="docs/images/favicon.png" alt="ship162 Logo" width="200"/>
+</div>
+
 # jet1090 and rs1090
 
-**jet1090** is a high-performance ADS-B decoder written in Rust, similar to dump1090, but with more capabilities. You may install it from the [Releases page](https://github.com/xoolive/jet1090/releases) but might want to read the [documentation](https://mode-s.org/jet1090) first.  
+**jet1090** is a high-performance ADS-B decoder written in Rust, similar to dump1090, but with more capabilities.  
+A complete documentation is available at [https://mode-s.org/jet1090](https://mode-s.org/jet1090).
+
 **rs1090** is the underlying Rust library to decode Mode S, ADS-B and FLARM messages, with Python and WebAssembly bindings.
 
 ![jet1090](https://raw.githubusercontent.com/xoolive/jet1090/refs/heads/master/docs/images/jet1090-table.png)
@@ -40,7 +46,7 @@ Benchmarking performed on the decoding of a gate-to-gate [European flight](./dat
 - `rs1090` with Python bindings on many cores **(default)**;
 - full Rust `rs1090` benchmark on many cores **(default)**.
 
-The Python script for benchmarking is in [python/examples](python/examples/benchmark.py).  
+The Python script for benchmarking is in python/examples.  
 The Rust benchmark is executed with `cargo bench`.  
 Both scripts are run on an Intel(R) Core(TM) i7-10850H CPU @ 2.70GHz.
 
@@ -51,6 +57,40 @@ Both scripts are run on an Intel(R) Core(TM) i7-10850H CPU @ 2.70GHz.
 
 ## Installation
 
+Pre-built binaries for Linux, macOS, and Windows are available on the [GitHub Releases](https://github.com/xoolive/jet1090/releases) page.
+
+**Shell installer** (Linux and macOS):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/xoolive/jet1090/releases/latest/download/jet1090-installer.sh | sh
+```
+
+**PowerShell** (Windows):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/xoolive/jet1090/releases/latest/download/jet1090-installer.ps1 | iex"
+```
+
+**Homebrew** (macOS):
+
+```sh
+brew install xoolive/homebrew/jet1090
+```
+
+**Arch Linux** (AUR):
+
+```sh
+yay -S jet1090-bin
+```
+
+**Cargo**:
+
+```sh
+cargo install --all-features jet1090
+```
+
+### Rust library
+
 Run the following Cargo command in your project directory:
 
 ```sh
@@ -60,7 +100,7 @@ cargo add rs1090
 Or add the following line to your `Cargo.toml`:
 
 ```toml
-rs1090 = "1.0.0"  # check for the latest version, we are not there yet
+rs1090 = "0.6.0"  # check crates.io for the latest version
 ```
 
 ## Usage
