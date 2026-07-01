@@ -36,6 +36,8 @@ jobs:
             target: s390x
           - runner: ubuntu-22.04
             target: ppc64le
+    env:
+      PYO3_NO_FREE_THREADED: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -68,6 +70,8 @@ jobs:
             target: aarch64
           - runner: ubuntu-22.04
             target: armv7
+    env:
+      PYO3_NO_FREE_THREADED: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -96,6 +100,8 @@ jobs:
             target: x64
           - runner: windows-latest
             target: x86
+    env:
+      PYO3_NO_FREE_THREADED: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -124,6 +130,8 @@ jobs:
             target: x86_64
           - runner: macos-14
             target: aarch64
+    env:
+      PYO3_NO_FREE_THREADED: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6

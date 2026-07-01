@@ -25,6 +25,10 @@ jobs:
           - "3.13"
           - "3.14"
 
+    env:
+      # Skip free-threaded Python builds for PyO3 compatibility (3.13 only)
+      PYO3_NO_FREE_THREADED: "1"
+
     steps:
       - uses: actions/checkout@v7
 
