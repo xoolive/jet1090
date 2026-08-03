@@ -350,7 +350,7 @@ impl TunnelledTcp {
                 .map_err(|e| {
                     let msg = format!(
                         "Could not connect to jump host {}: {}",
-                        &self.jump, e
+                        self.jump, e
                     );
                     BoxError::from(msg)
                 })?;
@@ -379,7 +379,7 @@ impl TunnelledWebsocket {
                 .map_err(|e| {
                     let msg = format!(
                         "Could not connect to jump host {}: {}",
-                        &self.jump, e
+                        self.jump, e
                     );
                     BoxError::from(msg)
                 })?;

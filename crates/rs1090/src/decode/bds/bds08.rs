@@ -342,8 +342,8 @@ pub fn callsign_read<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
 impl fmt::Display for AircraftIdentification {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "  Aircraft identification and category (BDS 0,8)")?;
-        writeln!(f, "  Callsign:      {}", &self.callsign)?;
-        writeln!(f, "  Category:      {}", &self.wake_vortex)?;
+        writeln!(f, "  Callsign:      {}", self.callsign)?;
+        writeln!(f, "  Category:      {}", self.wake_vortex)?;
         Ok(())
     }
 }

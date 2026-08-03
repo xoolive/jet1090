@@ -350,11 +350,7 @@ impl fmt::Display for TargetStateAndStatusInformation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "  Target state and status (BDS 6,2)")?;
         if let Some(sel_alt) = &self.selected_altitude {
-            writeln!(
-                f,
-                "  Selected alt:  {} ft {}",
-                sel_alt, &self.alt_source
-            )?;
+            writeln!(f, "  Selected alt:  {} ft {}", sel_alt, self.alt_source)?;
         }
         if let Some(sel_hdg) = &self.selected_heading {
             writeln!(f, "  Selected hdg:  {sel_hdg:.1}°")?;

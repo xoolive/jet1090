@@ -641,7 +641,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Periodically update all sensor references to lowest aircraft position
         if msg.timestamp - last_reference_update > 300.0 {
-            for (_, reference) in references.iter_mut() {
+            for reference in references.values_mut() {
                 rs1090::decode::cpr::update_global_reference(
                     &aircraft,
                     reference,

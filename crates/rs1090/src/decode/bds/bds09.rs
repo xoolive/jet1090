@@ -683,9 +683,9 @@ impl fmt::Display for AirborneVelocity {
             | AirborneVelocitySubType::Reserved1(_) => {}
         }
         if let Some(vr) = &self.vertical_rate {
-            writeln!(f, "  Vertical rate: {} ft/min {}", vr, &self.vrate_src)?;
+            writeln!(f, "  Vertical rate: {} ft/min {}", vr, self.vrate_src)?;
         }
-        writeln!(f, "  NACv:          {}", &self.nac_v)?;
+        writeln!(f, "  NACv:          {}", self.nac_v)?;
         if let Some(value) = &self.geo_minus_baro {
             writeln!(f, "  GNSS delta:    {value} ft")?;
         }

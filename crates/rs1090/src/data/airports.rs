@@ -21,8 +21,8 @@ impl Display for Airport {
         write!(f, "{}", Color::RGB(0, 128, 0).bold().paint(&self.icao))?;
         write!(f, " - ")?;
         write!(f, "{}", Color::RGB(255, 69, 0).paint(&self.iata))?;
-        write!(f, "    {:.3} {:.3}\t", &self.lat, &self.lon)?;
-        write!(f, "{} ({})", &self.name, &self.country)
+        write!(f, "    {:.3} {:.3}\t", self.lat, self.lon)?;
+        write!(f, "{} ({})", self.name, self.country)
     }
 }
 
