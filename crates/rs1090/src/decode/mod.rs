@@ -563,7 +563,7 @@ where
 
 impl fmt::Display for TimedMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{:.5},{}", &self.timestamp, hex::encode(&self.frame))?;
+        writeln!(f, "{:.5},{}", self.timestamp, hex::encode(&self.frame))?;
         if let Some(msg) = &self.message {
             writeln!(f, "{msg}")?;
         }
@@ -572,7 +572,7 @@ impl fmt::Display for TimedMessage {
 }
 impl fmt::Debug for TimedMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{:.5},{}", &self.timestamp, hex::encode(&self.frame))?;
+        writeln!(f, "{:.5},{}", self.timestamp, hex::encode(&self.frame))?;
         if let Some(msg) = &self.message {
             writeln!(f, "{msg:#}")?;
         }

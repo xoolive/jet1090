@@ -36,9 +36,9 @@ pub struct ADSB {
 impl fmt::Display for ADSB {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, " DF17. Extended Squitter")?;
-        writeln!(f, "  Address:       {}", &self.icao24)?;
-        writeln!(f, "  Air/Ground:    {}", &self.capability)?;
-        write!(f, "{}", &self.message)
+        writeln!(f, "  Address:       {}", self.icao24)?;
+        writeln!(f, "  Air/Ground:    {}", self.capability)?;
+        write!(f, "{}", self.message)
     }
 }
 

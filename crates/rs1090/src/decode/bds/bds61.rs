@@ -99,8 +99,8 @@ pub struct AircraftStatus {
 impl fmt::Display for AircraftStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "  Aircraft Status (BDS 6,1)")?;
-        writeln!(f, "  Squawk:        {:x?}", &self.squawk)?;
-        writeln!(f, "  Emergency/priority:    {}", &self.emergency_state)?;
+        writeln!(f, "  Squawk:        {:x?}", self.squawk)?;
+        writeln!(f, "  Emergency/priority:    {}", self.emergency_state)?;
         Ok(())
     }
 }
