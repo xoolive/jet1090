@@ -5,6 +5,9 @@ use tracing::error;
 
 pub mod demod2400;
 pub mod demod6000;
+pub mod metrics;
+
+pub use metrics::{DemodChunkStats, DemodMetrics, DemodMetricsTracker};
 
 /// Mode S message with metadata
 #[derive(Clone, Debug)]

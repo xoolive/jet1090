@@ -3,17 +3,30 @@ use tokio::sync::mpsc;
 
 use crate::decode::time::now_in_ns;
 use crate::prelude::*;
-use crate::source::demod::demod2400::demodulate2400;
-use crate::source::demod::demod6000::demodulate6000;
-use crate::source::demod::{convert_f32_to_i16_iq, magnitude_u16};
+use crate::source::demod::demod2400::demodulate2400_with_stats;
+use crate::source::demod::demod6000::demodulate6000_with_stats;
+use crate::source::demod::{
+    convert_f32_to_i16_iq, magnitude_u16, DemodMetrics, DemodMetricsTracker,
+};
+use tracing::debug;
+
+#[derive(Clone, Debug)]
+pub struct FileReceiverConfig {
+    pub base_timestamp: f64,
+    pub chunk_size: u64,
+    pub name: Option<String>,
+}
 
 pub async fn receiver(
     tx: mpsc::Sender<TimedMessage>,
+    tx_metrics: Option<mpsc::Sender<DemodMetrics>>,
     mut source: IqAsyncSource,
     serial: u64,
     rate: f64,
     name: Option<String>,
 ) {
+    let mut metrics_tracker = DemodMetricsTracker::default();
+
     while let Some(buf) = source.next().await {
         if let Ok(buf) = buf {
             // Timestamp buffer arrival to calculate per-message reception times.
@@ -22,14 +35,14 @@ pub async fn receiver(
             let buffer_arrival_ns = now_in_ns();
             let buffer_arrival_time = buffer_arrival_ns as f64 * 1e-9;
 
-            let resulting_data = match rate {
+            let (resulting_data, chunk_stats) = match rate {
                 2.4e6 => {
                     let mag_u16 = magnitude_u16(&buf);
-                    demodulate2400(&mag_u16)
+                    demodulate2400_with_stats(&mag_u16)
                 }
                 6.0e6 => {
                     let iq_i16 = convert_f32_to_i16_iq(&buf);
-                    demodulate6000(&iq_i16)
+                    demodulate6000_with_stats(&iq_i16)
                 }
                 _ => {
                     panic!(
@@ -38,6 +51,20 @@ pub async fn receiver(
                     );
                 }
             };
+
+            if let Some(metrics) = metrics_tracker.update(&chunk_stats) {
+                debug!(
+                    pulse_snr_db = metrics.pulse_snr_db,
+                    preamble_corr = metrics.preamble_corr,
+                    crc_rate = metrics.crc_rate,
+                    message_rate = metrics.message_rate,
+                    timestamp = metrics.timestamp,
+                    "demod metrics snapshot"
+                );
+                if let Some(ref sender) = tx_metrics {
+                    let _ = sender.send(metrics).await;
+                }
+            }
 
             for data in resulting_data {
                 // Calculate when this message was received based on its sample position.
@@ -77,25 +104,25 @@ pub async fn receiver(
 /// preserving temporal relationships between messages for proper CPR decoding and analysis.
 pub async fn file_receiver(
     tx: mpsc::Sender<TimedMessage>,
+    tx_metrics: Option<mpsc::Sender<DemodMetrics>>,
     mut source: IqAsyncSource,
     serial: u64,
     rate: f64,
-    base_timestamp: f64,
-    chunk_size: u64,
-    name: Option<String>,
+    cfg: FileReceiverConfig,
 ) {
     let mut sample_count: u64 = 0;
+    let mut metrics_tracker = DemodMetricsTracker::default();
 
     while let Some(buf) = source.next().await {
         if let Ok(buf) = buf {
-            let resulting_data = match rate {
+            let (resulting_data, chunk_stats) = match rate {
                 2.4e6 => {
                     let mag_u16 = magnitude_u16(&buf);
-                    demodulate2400(&mag_u16)
+                    demodulate2400_with_stats(&mag_u16)
                 }
                 6.0e6 => {
                     let iq_i16 = convert_f32_to_i16_iq(&buf);
-                    demodulate6000(&iq_i16)
+                    demodulate6000_with_stats(&iq_i16)
                 }
                 _ => {
                     panic!(
@@ -104,10 +131,24 @@ pub async fn file_receiver(
                     );
                 }
             };
+
+            if let Some(metrics) = metrics_tracker.update(&chunk_stats) {
+                debug!(
+                    pulse_snr_db = metrics.pulse_snr_db,
+                    preamble_corr = metrics.preamble_corr,
+                    crc_rate = metrics.crc_rate,
+                    message_rate = metrics.message_rate,
+                    timestamp = metrics.timestamp,
+                    "demod metrics snapshot"
+                );
+                if let Some(ref sender) = tx_metrics {
+                    let _ = sender.send(metrics).await;
+                }
+            }
             for data in resulting_data {
                 // Calculate timestamp based on sample position and file base time
                 let sample_timestamp =
-                    base_timestamp + (sample_count as f64 / rate);
+                    cfg.base_timestamp + (sample_count as f64 / rate);
 
                 let metadata = SensorMetadata {
                     system_timestamp: sample_timestamp,
@@ -115,7 +156,7 @@ pub async fn file_receiver(
                     nanoseconds: None,
                     rssi: Some(10. * data.signal_level.log10() as f32),
                     serial,
-                    name: name.clone(),
+                    name: cfg.name.clone(),
                 };
                 let tmsg = TimedMessage {
                     timestamp: sample_timestamp,
@@ -130,7 +171,7 @@ pub async fn file_receiver(
             }
 
             // Increment sample count by the chunk size
-            sample_count += chunk_size;
+            sample_count += cfg.chunk_size;
         }
     }
 }

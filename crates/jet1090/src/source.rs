@@ -5,7 +5,11 @@ use std::str::FromStr;
 use rs1090::prelude::*;
 
 #[cfg(feature = "sdr")]
+use rs1090::source::demod::DemodMetrics;
+#[cfg(feature = "sdr")]
 use rs1090::source::iqread;
+#[cfg(feature = "sdr")]
+use rs1090::source::iqread::FileReceiverConfig;
 #[cfg(feature = "sero")]
 use rs1090::source::sero;
 #[cfg(feature = "ssh")]
@@ -48,6 +52,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 use tracing::error;
 use url::Url;
+
+#[cfg(feature = "sdr")]
+type DemodMetricsSender = Sender<DemodMetrics>;
+#[cfg(not(feature = "sdr"))]
+type DemodMetricsSender = Sender<()>;
 
 #[cfg(feature = "sdr")]
 const MODES_FREQ: f64 = 1.09e9;
@@ -664,6 +673,7 @@ impl Source {
     pub fn receiver(
         &self,
         tx: Sender<TimedMessage>,
+        _tx_metrics: Option<DemodMetricsSender>,
         serial: u64,
         name: Option<String>,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
@@ -716,7 +726,7 @@ impl Source {
                         .expect("Failed to create RTL-SDR source");
 
                     tokio::select! {
-                        _ = iqread::receiver(tx, source, serial, sample_rate, name) => {},
+                        _ = iqread::receiver(tx, _tx_metrics, source, serial, sample_rate, name) => {},
                         _ = shutdown_rx.recv() => {
                             // Silent shutdown
                         }
@@ -771,7 +781,7 @@ impl Source {
                     );
 
                     tokio::select! {
-                        _ = iqread::receiver(tx, source, serial, sample_rate, name) => {},
+                        _ = iqread::receiver(tx, _tx_metrics, source, serial, sample_rate, name) => {},
                         _ = shutdown_rx.recv() => {
                             // Silent shutdown
                         }
@@ -874,7 +884,7 @@ impl Source {
                         .expect("Failed to create SoapySDR source");
 
                     tokio::select! {
-                        _ = iqread::receiver(tx, source, serial, sample_rate, name) => {},
+                        _ = iqread::receiver(tx, _tx_metrics, source, serial, sample_rate, name) => {},
                         _ = shutdown_rx.recv() => {
                             // Silent shutdown
                         }
@@ -932,12 +942,15 @@ impl Source {
                     tokio::select! {
                         _ = iqread::file_receiver(
                             tx,
+                            _tx_metrics,
                             source,
                             serial,
                             sample_rate,
-                            base_timestamp,
-                            chunk_size,
-                            name,
+                            FileReceiverConfig {
+                                base_timestamp,
+                                chunk_size,
+                                name,
+                            },
                         ) => {},
                         _ = shutdown_rx.recv() => {
                             // Silent shutdown
