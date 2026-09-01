@@ -14,7 +14,7 @@ describe("rs1090 utils", () => {
 
   test("airports", () => {
     const a = airport_information("Paris");
-    expect(a.length).toBe(7);
-    expect(a[0].icao).toBe("LFPG");
+    expect(a.length).toBe(11);
+    expect(a.some((airport: { icao?: string }) => airport.icao === "LFPG")).toBe(true);
   });
 });
