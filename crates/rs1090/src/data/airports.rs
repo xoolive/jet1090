@@ -11,8 +11,6 @@ pub struct Airport {
     pub name: String,
     pub lat: f64,
     pub lon: f64,
-    pub city: String,
-    #[serde(rename = "countryCode")]
     pub country: String,
 }
 
@@ -36,7 +34,6 @@ pub fn one_airport(args: &[Regex]) -> Option<&Airport> {
             if !arg.is_match(&airport.country)
                 & !arg.is_match(&airport.icao)
                 & !arg.is_match(&airport.iata)
-                & !arg.is_match(&airport.city)
                 & !arg.is_match(&airport.name)
             {
                 continue 'airport;

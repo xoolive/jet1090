@@ -307,7 +307,6 @@ pub fn airport_information(query: &str) -> Result<JsValue, JsError> {
         .iter()
         .filter(|a| {
             a.name.to_lowercase().contains(&lowercase)
-                || a.city.to_lowercase().contains(&lowercase)
                 || a.icao.to_lowercase().contains(&lowercase)
                 || a.iata.to_lowercase().contains(&lowercase)
         })

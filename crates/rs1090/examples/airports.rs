@@ -12,7 +12,6 @@ pub fn main() {
             if !arg.is_match(&airport.country)
                 & !arg.is_match(&airport.icao)
                 & !arg.is_match(&airport.iata)
-                & !arg.is_match(&airport.city)
                 & !arg.is_match(&airport.name)
             {
                 continue 'airport;

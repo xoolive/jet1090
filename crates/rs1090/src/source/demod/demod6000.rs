@@ -266,7 +266,7 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
     let mut energy_buffer = Vec::with_capacity(iq_samples.len() / 2);
 
     // Process IQ pairs → energy
-    for chunk in iq_samples.chunks_exact(2) {
+    for chunk in iq_samples.as_chunks::<2>().0 {
         let i = chunk[0];
         let q = chunk[1];
         let energy = processor.process_sample(i, q);
