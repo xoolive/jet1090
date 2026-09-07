@@ -6,10 +6,12 @@ use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::snapshot::Snapshot;
+use crate::sensor::Sensor;
+use crate::snapshot::{Snapshot, StateVectors};
 use crate::SharedState;
 
 /// Information required to ask for a trajectory
@@ -69,7 +71,36 @@ async fn track(
 
 /// Returns decoding information about all sensors
 async fn sensors(State(shared): State<Arc<SharedState>>) -> impl IntoResponse {
-    Json(shared.sensors.clone())
+    let state_vectors = shared.state_vectors.read().await;
+    Json(sensor_stats(&shared.sensors, &state_vectors))
+}
+
+/// Fill in the aircraft count and last timestamp of each sensor.
+///
+/// A sensor counts an aircraft when it received that aircraft's latest
+/// message. Counts across sensors can therefore add up to more than the
+/// number of aircraft, since several sensors may receive the same message.
+fn sensor_stats(
+    sensors: &BTreeMap<u64, Sensor>,
+    state_vectors: &BTreeMap<String, StateVectors>,
+) -> BTreeMap<u64, Sensor> {
+    let mut sensors = sensors.clone();
+    let mut seen = HashSet::new();
+    for sv in state_vectors.values() {
+        // Metadata can list the same sensor several times for one aircraft,
+        // which must still only count once
+        seen.clear();
+        for meta in &sv.cur.metadata {
+            if let Some(sensor) = sensors.get_mut(&meta.serial) {
+                if seen.insert(meta.serial) {
+                    sensor.aircraft_count += 1;
+                }
+                sensor.last_timestamp =
+                    sensor.last_timestamp.max(meta.system_timestamp as u64);
+            }
+        }
+    }
+    sensors
 }
 
 /// Returns a list of potential airports matching the query string

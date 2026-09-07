@@ -20,9 +20,11 @@ pub struct Sensor {
     pub reference: Option<Position>,
     /// An (optional) position altitude (in m, WGS84 height)
     pub altitude: Option<f64>,
-    /// How many aircraft are seen by the sensor
+    /// Number of aircraft the sensor currently sees, computed on `/sensors`
+    /// requests
     pub aircraft_count: u64,
-    /// The timestamp for the last seen message
+    /// System timestamp in seconds of the last message from the sensor,
+    /// computed on `/sensors` requests
     pub last_timestamp: u64,
 }
 
