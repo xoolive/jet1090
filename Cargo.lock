@@ -4143,6 +4143,7 @@ dependencies = [
  "serde",
  "serde_json",
  "soapysdr",
+ "socket2",
  "ssh2-config",
  "tokio",
  "tokio-tungstenite",
