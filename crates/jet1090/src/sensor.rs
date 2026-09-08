@@ -31,105 +31,69 @@ pub struct Sensor {
 /**
  * Create a sensor or a list of sensors based on a source information.
  */
-pub async fn sensors(value: &Source) -> Vec<Sensor> {
+pub async fn sensors(value: &Source) -> Result<Vec<Sensor>, String> {
+    let local_sensor = || {
+        Ok(vec![Sensor {
+            serial: value.serial(),
+            name: value.name.clone(),
+            reference: value.reference(),
+            altitude: value.altitude,
+            aircraft_count: 0,
+            last_timestamp: 0,
+        }])
+    };
+
     match &value.address {
         Address::Tcp(_) | Address::Udp(_) | Address::Websocket(_) => {
-            vec![Sensor {
-                serial: value.serial(),
-                name: value.name.clone(),
-                reference: value.reference(),
-                altitude: value.altitude,
-                aircraft_count: 0,
-                last_timestamp: 0,
-            }]
+            local_sensor()
         }
         #[cfg(feature = "sdr")]
-        Address::File(_) => {
-            vec![Sensor {
-                serial: value.serial(),
-                name: value.name.clone(),
-                reference: value.reference(),
-                altitude: value.altitude,
-                aircraft_count: 0,
-                last_timestamp: 0,
-            }]
-        }
+        Address::File(_) => local_sensor(),
         #[cfg(feature = "rtlsdr")]
-        Address::Rtlsdr(_) => {
-            vec![Sensor {
-                serial: value.serial(),
-                name: value.name.clone(),
-                reference: value.reference(),
-                altitude: value.altitude,
-                aircraft_count: 0,
-                last_timestamp: 0,
-            }]
-        }
+        Address::Rtlsdr(_) => local_sensor(),
         #[cfg(feature = "airspy")]
-        Address::Airspy(_) => {
-            vec![Sensor {
-                serial: value.serial(),
-                name: value.name.clone(),
-                reference: value.reference(),
-                altitude: value.altitude,
-                aircraft_count: 0,
-                last_timestamp: 0,
-            }]
-        }
+        Address::Airspy(_) => local_sensor(),
         #[cfg(feature = "hackrf")]
-        Address::Hackrf(_) => {
-            vec![Sensor {
-                serial: value.serial(),
-                name: value.name.clone(),
-                reference: value.reference(),
-                altitude: value.altitude,
-                aircraft_count: 0,
-                last_timestamp: 0,
-            }]
-        }
+        Address::Hackrf(_) => local_sensor(),
         #[cfg(feature = "soapy")]
-        Address::Soapy(_) => {
-            vec![Sensor {
-                serial: value.serial(),
-                name: value.name.clone(),
-                reference: value.reference(),
-                altitude: value.altitude,
-                aircraft_count: 0,
-                last_timestamp: 0,
-            }]
-        }
+        Address::Soapy(_) => local_sensor(),
         Address::Sero(params) => {
             #[cfg(feature = "sero")]
             {
                 let sero = sero::SeroClient::from(params);
                 debug!("send {:?} to collect info", params);
-                let info = sero.info().await.unwrap();
-                info.sensor_info
+                let info = sero.info().await.map_err(|error| {
+                    format!("Sero sensor discovery failed: {error}")
+                })?;
+                Ok(info
+                    .sensor_info
                     .iter()
-                    .map(|elt| Sensor {
-                        serial: elt.sensor.unwrap().serial,
-                        reference: elt.gnss.as_ref().unwrap().position.map(
-                            |pos| Position {
+                    .filter_map(|elt| {
+                        let sensor = elt.sensor.as_ref()?;
+                        let position = elt.gnss.as_ref().and_then(|gnss| {
+                            gnss.position.as_ref().map(|pos| Position {
                                 latitude: pos.latitude,
                                 longitude: pos.longitude,
-                            },
-                        ),
-                        altitude: elt
-                            .gnss
-                            .as_ref()
-                            .unwrap()
-                            .position
-                            .map(|pos| pos.height),
-                        name: Some(elt.alias.to_string()),
-                        aircraft_count: 0,
-                        last_timestamp: 0,
+                            })
+                        });
+                        let altitude = elt.gnss.as_ref().and_then(|gnss| {
+                            gnss.position.as_ref().map(|pos| pos.height)
+                        });
+                        Some(Sensor {
+                            serial: sensor.serial,
+                            reference: position,
+                            altitude,
+                            name: Some(elt.alias.to_string()),
+                            aircraft_count: 0,
+                            last_timestamp: 0,
+                        })
                     })
-                    .collect()
+                    .collect())
             }
             #[cfg(not(feature = "sero"))]
             {
                 debug!("params {:?} unused", params);
-                vec![]
+                Ok(vec![])
             }
         }
     }

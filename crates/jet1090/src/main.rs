@@ -36,7 +36,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{watch, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
-use tracing::warn;
+use tracing::{error, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Default, Deserialize, Parser)]
@@ -202,10 +202,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Ok(config_file) = std::env::var("JET1090_CONFIG") {
         let path = expanduser(PathBuf::from(config_file));
-        let string = fs::read_to_string(path)
-            .await
-            .expect("Configuration file not found");
-        options = toml::from_str(&string).unwrap();
+        let string = fs::read_to_string(&path).await.map_err(|error| {
+            format!(
+                "Failed to read configuration file '{}': {error}",
+                path.display()
+            )
+        })?;
+        options = toml::from_str(&string).map_err(|error| {
+            format!(
+                "Failed to parse configuration file '{}': {error}",
+                path.display()
+            )
+        })?;
     }
 
     let mut cli_options = Options::parse();
@@ -320,16 +328,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let mut redis_connect = match options
-        .redis_url
-        .map(|url| redis::Client::open(url).unwrap())
-    {
-        // map is not possible because of the .await (the async context thing)
-        Some(c) => Some(
-            c.get_multiplexed_async_connection()
-                .await
-                .expect("Unable to connect to the Redis server"),
-        ),
+    const REDIS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+    let mut redis_connect = match options.redis_url {
+        Some(url) => {
+            let client = redis::Client::open(url.clone()).map_err(|error| {
+                format!("Invalid Redis URL '{url}': {error}")
+            })?;
+            let connection = tokio::time::timeout(
+                REDIS_CONNECT_TIMEOUT,
+                client.get_multiplexed_async_connection(),
+            )
+            .await
+            .map_err(|_| {
+                format!(
+                    "Timed out after {} seconds connecting to Redis at '{url}'",
+                    REDIS_CONNECT_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|error| {
+                format!("Failed to connect to Redis at '{url}': {error}")
+            })?;
+            Some(connection)
+        }
         None => None,
     };
     let redis_topic = options.redis_topic.unwrap_or("jet1090".to_string());
@@ -403,12 +423,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    const SENSOR_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
     let mut references = BTreeMap::<u64, Option<Position>>::new();
     let mut sensors = BTreeMap::<u64, Sensor>::new();
     for source in options.sources.iter() {
-        for sensor in sensor::sensors(source).await {
-            references.insert(sensor.serial, sensor.reference);
-            sensors.insert(sensor.serial, sensor);
+        let source_label = source.name.as_deref().unwrap_or("unnamed source");
+        tracing::info!(source = source_label, "Discovering sensor metadata");
+        match tokio::time::timeout(
+            SENSOR_DISCOVERY_TIMEOUT,
+            sensor::sensors(source),
+        )
+        .await
+        {
+            Ok(Ok(source_sensors)) => {
+                for sensor in source_sensors {
+                    references.insert(sensor.serial, sensor.reference);
+                    sensors.insert(sensor.serial, sensor);
+                }
+            }
+            Ok(Err(error_message)) => {
+                error!(
+                    source = source_label,
+                    error = %error_message,
+                    "Sensor discovery failed; continuing without sensor metadata"
+                );
+            }
+            Err(_) => {
+                error!(
+                    source = source_label,
+                    timeout_seconds = SENSOR_DISCOVERY_TIMEOUT.as_secs(),
+                    "Sensor discovery timed out; continuing without sensor metadata"
+                );
+            }
         }
     }
 
