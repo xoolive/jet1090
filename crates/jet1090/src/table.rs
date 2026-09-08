@@ -8,11 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use style::palette::tailwind;
 use tokio::sync::RwLockReadGuard;
 
+use crate::health::{Severity, SourceStatus};
 use crate::snapshot::{Snapshot, StateVectors};
 use crate::{Jet1090, SharedState, SortKey};
 
 const INFO_TEXT: &str =
-    "(Esc/Q) quit | (↑/K) up | (↓/J) down | (⤒/G) top | (/) search";
+    "(Esc/Q) quit | (↑/K) up | (↓/J) down | (⤒/G) top | (/) search | (E) errors";
 
 /**
  * Rendering of the table in interactive mode
@@ -20,7 +21,7 @@ const INFO_TEXT: &str =
 pub fn build_table(
     frame: &mut Frame,
     app: &mut Jet1090,
-    _shared: &SharedState,
+    shared: &SharedState,
     state_vectors: &RwLockReadGuard<'_, BTreeMap<String, StateVectors>>,
 ) {
     let now = SystemTime::now()
@@ -247,6 +248,7 @@ pub fn build_table(
         .map(|c| c.constraint())
         .collect::<Vec<Constraint>>();
 
+    let health_title = source_health_title(shared);
     let table = Table::new(rows, constraints)
         .column_spacing(2)
         .header(
@@ -261,9 +263,14 @@ pub fn build_table(
         )
         .block(
             Block::default()
-                .title_bottom(format!("jet1090 ({size} aircraft)",))
-                .title_alignment(Alignment::Right)
-                .title_style(Style::new().blue().bold())
+                .title_bottom(health_title)
+                .title_bottom(
+                    Line::from(Span::styled(
+                        format!("jet1090 ({size} aircraft) "),
+                        Style::new().blue().bold(),
+                    ))
+                    .alignment(Alignment::Right),
+                )
                 .padding(Padding::symmetric(1, 0))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded),
@@ -291,25 +298,154 @@ pub fn build_table(
         &mut app.scroll_state,
     );
 
-    let area = rects[1];
-    if app.is_search_mode {
-        frame.render_widget(
-            Paragraph::new(Line::from(format!(
-                "Search (Esc to cancel, Enter to lock): {}",
-                app.search_query
-            )))
-            .style(Style::new().fg(colors.row_fg).bg(colors.buffer_bg))
-            .left_aligned(),
-            area,
-        );
+    let controls_area = rects[1];
+    let controls = if app.is_search_mode {
+        Line::from(format!(
+            "Search (Esc to cancel, Enter to lock): {}",
+            app.search_query
+        ))
     } else {
-        frame.render_widget(
-            Paragraph::new(Line::from(INFO_TEXT))
-                .style(Style::new().fg(colors.row_fg).bg(colors.buffer_bg))
-                .centered(),
-            area,
-        );
+        Line::from(INFO_TEXT)
+    };
+    frame.render_widget(
+        Paragraph::new(controls)
+            .style(Style::new().fg(colors.row_fg).bg(colors.buffer_bg))
+            .centered(),
+        controls_area,
+    );
+
+    if app.show_errors {
+        render_error_overlay(frame, app, shared);
     }
+}
+
+fn source_health_title(shared: &SharedState) -> Line<'static> {
+    let health = shared.health.lock().expect("health state lock poisoned");
+    let mut healthy = 0;
+    let mut connecting = 0;
+    let mut reconnecting = 0;
+    let mut failed = 0;
+    for status in health.sources.values() {
+        match status {
+            SourceStatus::Healthy => healthy += 1,
+            SourceStatus::Connecting => connecting += 1,
+            SourceStatus::Reconnecting => reconnecting += 1,
+            SourceStatus::Failed => failed += 1,
+        }
+    }
+
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("● {healthy}"),
+            Style::new().fg(tailwind::GREEN.c400),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("○ {connecting}"),
+            Style::new().fg(tailwind::CYAN.c400),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("↻ {reconnecting}"),
+            Style::new().fg(tailwind::YELLOW.c400),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("✕ {failed}"),
+            Style::new().fg(tailwind::RED.c400),
+        ),
+    ];
+    if health.unread_errors > 0 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!("⚠ {}", health.unread_errors),
+            Style::new().fg(tailwind::RED.c400).bold(),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn render_error_overlay(
+    frame: &mut Frame,
+    app: &mut Jet1090,
+    shared: &SharedState,
+) {
+    let health = shared.health.lock().expect("health state lock poisoned");
+    let area = centered_rect(85, 75, frame.area());
+    let height = area.height.saturating_sub(2) as usize;
+    let visible_events = health
+        .events
+        .iter()
+        .rev()
+        .skip(app.error_scroll)
+        .take(height)
+        .cloned()
+        .collect::<Vec<_>>();
+    let event_count = health.events.len();
+    drop(health);
+    let events = visible_events
+        .iter()
+        .map(|event| {
+            let color = match event.severity {
+                Severity::Warning => tailwind::YELLOW.c400,
+                Severity::Error => tailwind::RED.c400,
+            };
+            let repeats = if event.occurrences > 1 {
+                format!(" (×{})", event.occurrences)
+            } else {
+                String::new()
+            };
+            Line::from(vec![
+                Span::styled(
+                    event.timestamp.format("%H:%M:%S").to_string(),
+                    Style::new().fg(tailwind::SLATE.c400),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    event.severity.label(),
+                    Style::new().fg(color).bold(),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    event.source.clone(),
+                    Style::new().fg(tailwind::CYAN.c300),
+                ),
+                Span::raw("  "),
+                Span::raw(format!("{}{}", event.message, repeats)),
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(events)
+            .block(
+                Block::default()
+                    .title(format!(" Recent errors ({event_count}) "))
+                    .title_style(Style::new().fg(tailwind::RED.c400).bold())
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(tailwind::RED.c400)),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(vertical[1])[1]
 }
 
 /**

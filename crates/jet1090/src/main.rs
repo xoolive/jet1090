@@ -2,6 +2,7 @@
 
 mod dedup;
 mod filters;
+mod health;
 mod sensor;
 mod shell;
 mod snapshot;
@@ -14,6 +15,7 @@ mod web;
 use crate::tui::Event;
 use crate::util::expanduser;
 use crate::web::serve_web_api;
+use crate::{health::SharedHealth, health::SourceStatus};
 use clap::{Command, CommandFactory, Parser, ValueHint};
 use clap_complete::{generate, Generator};
 use crossterm::event::KeyCode;
@@ -300,24 +302,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     options.sources.append(&mut cli_options.sources);
 
-    // example: RUST_LOG=rs1090=DEBUG
-    let env_filter = EnvFilter::from_default_env();
-
-    let subscriber = tracing_subscriber::registry().with(env_filter);
-    match options.log_file.as_deref() {
-        Some("-") if !cli_options.interactive => {
-            // when it's interactive, logs will disrupt the display
-            subscriber.with(fmt::layer().pretty()).init();
-        }
-        Some(log_file) if log_file != "-" => {
-            let file = std::fs::File::create(log_file).unwrap_or_else(|_| {
-                panic!("fail to create log file: {log_file}")
-            });
-            let file_layer = fmt::layer().with_writer(file).with_ansi(false);
-            subscriber.with(file_layer).init();
-        }
-        _ => {
-            subscriber.init(); // no logging
+    // Capture operational warnings by default; RUST_LOG can raise or lower verbosity.
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    let health = health::new_health();
+    let subscriber = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(health::UiEventLayer::new(health.clone()));
+    if options.interactive {
+        // Writing tracing events to stdout or stderr corrupts the alternate TUI screen.
+        subscriber.init();
+    } else {
+        match options.log_file.as_deref() {
+            Some("-") => subscriber.with(fmt::layer().pretty()).init(),
+            Some(log_file) => {
+                let file =
+                    std::fs::File::create(log_file).unwrap_or_else(|_| {
+                        panic!("fail to create log file: {log_file}")
+                    });
+                let file_layer =
+                    fmt::layer().with_writer(file).with_ansi(false);
+                subscriber.with(file_layer).init();
+            }
+            None => subscriber.init(),
         }
     }
 
@@ -397,32 +404,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut aircraft: BTreeMap<ICAO, AircraftState> = BTreeMap::new();
 
-    // Initialize terminal
-    let terminal = if options.interactive {
-        Some(tui::init()?)
-    } else {
-        None
-    };
-
-    // Ensure terminal is restored on panic
-    let _terminal_guard = if terminal.is_some() {
-        Some(tui::TerminalGuard)
-    } else {
-        None
-    };
-
-    let width = if let Some(terminal) = &terminal {
-        terminal.size()?.width
-    } else {
-        0
-    };
-
-    let mut events = if terminal.is_some() {
-        Some(tui::EventHandler::new(width))
-    } else {
-        None
-    };
-
     const SENSOR_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
     let mut references = BTreeMap::<u64, Option<Position>>::new();
     let mut sensors = BTreeMap::<u64, Sensor>::new();
@@ -459,11 +440,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Create shared state accessible by all tasks
-    let shared = Arc::new(SharedState::new(sensors));
+    let shared = Arc::new(SharedState::new(sensors, health.clone()));
     let shared_dec = shared.clone();
     let shared_web = shared.clone();
     let shared_exp = shared.clone();
     let mut quit_rx = shared_dec.quit_tx.subscribe();
+    for source in &options.sources {
+        let serial = source.serial();
+        let source_label = source
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("source-{serial:016x}"));
+        health::register_source(&health, source_label);
+    }
+
+    // Do not enter the alternate screen until source discovery is complete:
+    // discovery can wait on remote services and would otherwise leave a blank TUI.
+    let terminal = if options.interactive {
+        Some(tui::init()?)
+    } else {
+        None
+    };
+    let _terminal_guard = if terminal.is_some() {
+        Some(tui::TerminalGuard)
+    } else {
+        None
+    };
+    let width = match &terminal {
+        Some(terminal) => terminal.size()?.width,
+        None => 0,
+    };
+    let mut events = terminal.is_some().then(|| tui::EventHandler::new(width));
 
     // Handle signals (SIGINT, SIGTERM, SIGHUP) to ensure terminal restoration
     if terminal.is_some() {
@@ -529,40 +536,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         search_query: "".to_string(),
         interactive_expire: options.interactive_expire.unwrap_or(30),
         flags: options.flags,
+        show_errors: false,
+        error_scroll: 0,
     }));
 
+    let mut tui_handle = None;
     if let Some(mut terminal) = terminal {
+        // Render synchronously once so a working table is visible before the
+        // input task receives its first periodic tick.
+        {
+            let mut app = app_tui.lock().await;
+            let state_vectors = shared.state_vectors.read().await;
+            terminal.draw(|frame| {
+                table::build_table(frame, &mut app, &shared, &state_vectors)
+            })?;
+        }
+
         let app_tui_task = app_tui.clone();
         let shared_tui = shared.clone();
         let mut events =
             events.take().expect("event handler in interactive mode");
-        tokio::spawn(async move {
+        tui_handle = Some(tokio::spawn(async move {
             loop {
-                if let Ok(event) = events.next().await {
-                    update(&mut app_tui_task.lock().await, event, &shared_tui)?;
+                let event = match events.next().await {
+                    Ok(event) => event,
+                    Err(error) => {
+                        error!(error = %error, "Interactive event handler failed");
+                        shared_tui.request_quit();
+                        break;
+                    }
+                };
+                if let Err(error) =
+                    update(&mut app_tui_task.lock().await, event, &shared_tui)
+                {
+                    error!(error = %error, "Interactive update failed");
+                    shared_tui.request_quit();
+                    break;
                 }
                 let mut app = app_tui_task.lock().await;
                 if shared_tui.should_quit.load(Ordering::Relaxed) {
                     break;
                 }
                 if shared_tui.should_clear.swap(false, Ordering::Relaxed) {
-                    terminal.clear()?;
+                    // Clearing only removes incidental stdout from SDR backends.
+                    // A terminal that cannot be cleared can still render normally.
+                    if let Err(error) = terminal.clear() {
+                        warn!(error = %error, "Interactive terminal clear failed; continuing");
+                    }
                 }
-                // Acquire read lock on state_vectors before drawing
-                // This allows concurrent reads by TUI and Web API
                 let state_vectors = shared_tui.state_vectors.read().await;
-                terminal.draw(|frame| {
+                if let Err(error) = terminal.draw(|frame| {
                     table::build_table(
                         frame,
                         &mut app,
                         &shared_tui,
                         &state_vectors,
                     )
-                })?;
-                drop(state_vectors); // Release read lock
+                }) {
+                    error!(error = %error, "Interactive terminal draw failed");
+                    shared_tui.request_quit();
+                    break;
+                }
             }
             tui::restore()
-        });
+        }));
     }
 
     if let Some(minutes) = options.history_expire {
@@ -607,8 +644,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let serial = source.serial();
         let tx_copy = tx.clone();
         let source_name = source.name.clone();
+        let source_label = source_name
+            .clone()
+            .unwrap_or_else(|| format!("source-{serial:016x}"));
+        health::register_source(&health, source_label.clone());
+        health::set_source_status(
+            &health,
+            &source_label,
+            SourceStatus::Healthy,
+        );
         let shutdown_rx = shutdown_tx.subscribe();
-        let handle = source.receiver(tx_copy, serial, source_name, shutdown_rx);
+        let handle = source.receiver(
+            tx_copy,
+            serial,
+            source_name,
+            shutdown_rx,
+            health.clone(),
+        );
         source_handles.push(handle);
     }
 
@@ -676,12 +728,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             break;
         };
         if first_msg {
-            // This workaround results from soapysdr writing directly on stdout.
-            // The best thing would be to not write to stdout in the first
-            // place. A better workaround would be to condition that clear to
-            // the first message received from rtlsdr.
-
-            shared_dec.should_clear.store(true, Ordering::Relaxed);
+            // Do not clear the terminal here: crossterm's clear path queries
+            // cursor position and can fail in otherwise functional terminals.
             first_msg = false;
         }
 
@@ -810,13 +858,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Signal all source tasks to shut down
+    // Signal all source tasks and the TUI to shut down.
+    shared_dec.request_quit();
     let _ = shutdown_tx.send(());
 
     // Wait for all source tasks to finish with timeout
     let timeout = Duration::from_secs(2);
     for handle in source_handles {
         let _ = tokio::time::timeout(timeout, handle).await;
+    }
+    if let Some(handle) = tui_handle {
+        let _ = tokio::time::timeout(timeout, handle).await;
+    }
+    if options.interactive {
+        tui::restore().ok();
+        health::print_report(&health);
     }
 
     Ok(())
@@ -867,6 +923,8 @@ pub struct Jet1090 {
     search_query: String,
     interactive_expire: u64,
     flags: bool,
+    show_errors: bool,
+    error_scroll: usize,
 }
 
 /// Shared state that multiple tasks need to access
@@ -882,10 +940,12 @@ pub struct SharedState {
     quit_tx: watch::Sender<bool>,
     /// Clear screen flag - lock-free atomic
     should_clear: Arc<AtomicBool>,
+    /// Recent operational events and source health for the interactive UI
+    health: SharedHealth,
 }
 
 impl SharedState {
-    fn new(sensors: BTreeMap<u64, Sensor>) -> Self {
+    fn new(sensors: BTreeMap<u64, Sensor>, health: SharedHealth) -> Self {
         let (quit_tx, _quit_rx) = watch::channel(false);
 
         Self {
@@ -894,6 +954,7 @@ impl SharedState {
             should_quit: Arc::new(AtomicBool::new(false)),
             quit_tx,
             should_clear: Arc::new(AtomicBool::new(false)),
+            health,
         }
     }
 
@@ -936,7 +997,8 @@ fn update(
                 (false, Char('j')) | (_, Down) => jet1090.next(),
                 (false, Char('k')) | (_, Up) => jet1090.previous(),
                 (false, Char('g')) | (_, PageUp) | (_, Home) => jet1090.home(),
-                (false, Char('q')) | (false, Esc) => shared.request_quit(),
+                (false, Char('q')) => shared.request_quit(),
+                (false, Esc) if !jet1090.show_errors => shared.request_quit(),
                 (false, Char('a')) => jet1090.sort_key = SortKey::ALTITUDE,
                 (false, Char('c')) => jet1090.sort_key = SortKey::CALLSIGN,
                 (false, Char('v')) => jet1090.sort_key = SortKey::VRATE,
@@ -945,6 +1007,28 @@ fn update(
                 (false, Char('l')) => jet1090.sort_key = SortKey::LAST,
                 (false, Char('-')) => jet1090.sort_asc = !jet1090.sort_asc,
                 (false, Char('/')) => jet1090.is_search_mode = true,
+                (false, Char('e')) => {
+                    jet1090.show_errors = !jet1090.show_errors;
+                    if jet1090.show_errors {
+                        health::mark_events_read(&shared.health);
+                    }
+                }
+                (false, Char('E')) => {
+                    jet1090.show_errors = false;
+                    health::mark_events_read(&shared.health);
+                }
+                (false, Char('J')) if jet1090.show_errors => {
+                    jet1090.error_scroll =
+                        jet1090.error_scroll.saturating_add(1)
+                }
+                (false, Char('K')) if jet1090.show_errors => {
+                    jet1090.error_scroll =
+                        jet1090.error_scroll.saturating_sub(1)
+                }
+                (false, Esc) if jet1090.show_errors => {
+                    jet1090.show_errors = false;
+                    health::mark_events_read(&shared.health);
+                }
                 _ => {}
             }
         }
