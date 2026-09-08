@@ -24,6 +24,8 @@ use rs1090::decode::commb::MessageProcessor;
 use rs1090::decode::cpr::{decode_position, AircraftState};
 use rs1090::decode::serialize_config;
 use rs1090::prelude::*;
+#[cfg(feature = "sdr")]
+use rs1090::source::demod::DemodMetrics;
 use sensor::Sensor;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -550,6 +552,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(100 * multiplier + 1);
     let (tx_dedup, mut rx_dedup) =
         tokio::sync::mpsc::channel(100 * multiplier + 1);
+    #[cfg(feature = "sdr")]
+    let (tx_metrics, mut rx_metrics) =
+        tokio::sync::mpsc::channel::<DemodMetrics>(100 * multiplier + 1);
 
     // Create shutdown signal channel for coordinated task termination
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
@@ -557,12 +562,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Collect task handles for graceful shutdown
     let mut source_handles = Vec::new();
 
+    #[cfg(feature = "sdr")]
+    tokio::spawn(async move {
+        while let Some(metrics) = rx_metrics.recv().await {
+            tracing::debug!(
+                pulse_snr_db = metrics.pulse_snr_db,
+                preamble_corr = metrics.preamble_corr,
+                crc_rate = metrics.crc_rate,
+                message_rate = metrics.message_rate,
+                timestamp = metrics.timestamp,
+                "jet1090 demod metrics"
+            );
+        }
+    });
+
     for source in options.sources.into_iter() {
         let serial = source.serial();
         let tx_copy = tx.clone();
+        #[cfg(feature = "sdr")]
+        let tx_metrics_copy = Some(tx_metrics.clone());
+        #[cfg(not(feature = "sdr"))]
+        let tx_metrics_copy = None;
         let source_name = source.name.clone();
         let shutdown_rx = shutdown_tx.subscribe();
-        let handle = source.receiver(tx_copy, serial, source_name, shutdown_rx);
+        let handle = source.receiver(
+            tx_copy,
+            tx_metrics_copy,
+            serial,
+            source_name,
+            shutdown_rx,
+        );
         source_handles.push(handle);
     }
 

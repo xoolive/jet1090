@@ -23,7 +23,7 @@
 //! - ICAO Annex 10 Vol IV (Mode S specifications)
 
 use super::{
-    validate_modes_message, ModeSMessage, MODES_LONG_MSG_BITS,
+    validate_modes_message, DemodChunkStats, ModeSMessage, MODES_LONG_MSG_BITS,
     MODES_SHORT_MSG_BITS,
 };
 
@@ -259,7 +259,14 @@ impl BitDecoder {
 /// # Returns
 /// Vector of successfully decoded Mode S messages with CRC validation
 pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
+    demodulate6000_with_stats(iq_samples).0
+}
+
+pub fn demodulate6000_with_stats(
+    iq_samples: &[i16],
+) -> (Vec<ModeSMessage>, DemodChunkStats) {
     let mut results = Vec::new();
+    let mut stats = DemodChunkStats::default();
 
     // Convert IQ to energy stream
     let mut processor = MagnitudeProcessor::new();
@@ -278,7 +285,15 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
     let mut pos = 0;
 
     while pos < energy_buffer.len() {
-        if let Some(_correlation_score) = detector.detect(&energy_buffer, pos) {
+        if let Some(correlation_score) = detector.detect(&energy_buffer, pos) {
+            let corr = correlation_score as f64;
+            let snr = if detector.noise_floor > 0 {
+                Some(10.0 * (corr / detector.noise_floor as f64).log10())
+            } else {
+                None
+            };
+            stats.record_preamble(corr, snr);
+
             // Found preamble! Try to decode message
             let msg_start = pos + PREAMBLE_LENGTH_SAMPLES;
 
@@ -292,6 +307,7 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
             {
                 // Reject all-zero messages (noise)
                 if msg.iter().all(|&b| b == 0x00) {
+                    stats.record_invalid();
                     pos += SAMPLES_PER_BIT;
                     continue;
                 }
@@ -314,12 +330,14 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
                         score,
                         sample_position: pos,
                     });
+                    stats.record_valid();
 
                     // Skip ahead to avoid re-detecting same message
                     pos += PREAMBLE_LENGTH_SAMPLES
                         + MODES_SHORT_MSG_BITS * SAMPLES_PER_BIT;
                     continue;
                 }
+                stats.record_invalid();
             }
 
             // Try long message (112 bits = 14 bytes)
@@ -332,6 +350,7 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
             {
                 // Reject all-zero messages (noise)
                 if msg.iter().all(|&b| b == 0x00) {
+                    stats.record_invalid();
                     pos += SAMPLES_PER_BIT;
                     continue;
                 }
@@ -354,12 +373,14 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
                         score,
                         sample_position: pos,
                     });
+                    stats.record_valid();
 
                     // Skip ahead to avoid re-detecting same message
                     pos += PREAMBLE_LENGTH_SAMPLES
                         + MODES_LONG_MSG_BITS * SAMPLES_PER_BIT;
                     continue;
                 }
+                stats.record_invalid();
             }
 
             // Preamble detected but no valid message, skip ahead a bit
@@ -369,5 +390,5 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
         }
     }
 
-    results
+    (results, stats)
 }

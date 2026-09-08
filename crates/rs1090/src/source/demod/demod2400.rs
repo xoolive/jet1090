@@ -1,4 +1,6 @@
-use super::{validate_modes_message, ModeSMessage, MODES_LONG_MSG_BYTES};
+use super::{
+    validate_modes_message, DemodChunkStats, ModeSMessage, MODES_LONG_MSG_BYTES,
+};
 
 // Minimum trailing samples needed to decode a full long message
 // This matches the TRAILING_SAMPLES from the original dump1090 implementation
@@ -6,11 +8,18 @@ use super::{validate_modes_message, ModeSMessage, MODES_LONG_MSG_BYTES};
 const MIN_TRAILING_SAMPLES: usize = 326;
 
 pub fn demodulate2400(samples: &[u16]) -> Vec<ModeSMessage> {
+    demodulate2400_with_stats(samples).0
+}
+
+pub fn demodulate2400_with_stats(
+    samples: &[u16],
+) -> (Vec<ModeSMessage>, DemodChunkStats) {
     let mut results = vec![];
+    let mut stats = DemodChunkStats::default();
 
     // Ensure we have enough samples to process
     if samples.len() < MIN_TRAILING_SAMPLES {
-        return results;
+        return (results, stats);
     }
 
     let mut skip_count: usize = 0;
@@ -23,9 +32,18 @@ pub fn demodulate2400(samples: &[u16]) -> Vec<ModeSMessage> {
         if let Some((high, base_signal, base_noise)) =
             check_preamble(&samples[j..j + 14])
         {
+            let corr = high as f64;
+            let snr = if base_noise > 0 {
+                Some(10.0 * (base_signal as f64 / base_noise as f64).log10())
+            } else {
+                None
+            };
+            stats.record_preamble(corr, snr);
+
             // Check for enough signal
             if base_signal * 2 < 3 * base_noise {
                 // about 3.5dB SNR
+                stats.record_invalid();
                 continue 'jloop;
             }
 
@@ -40,6 +58,7 @@ pub fn demodulate2400(samples: &[u16]) -> Vec<ModeSMessage> {
                 || i32::from(samples[j + 17]) >= high
                 || i32::from(samples[j + 18]) >= high
             {
+                stats.record_invalid();
                 continue 'jloop;
             }
 
@@ -103,14 +122,16 @@ pub fn demodulate2400(samples: &[u16]) -> Vec<ModeSMessage> {
 
             // Do we have a candidate?
             if bestmsg.score < 0 {
+                stats.record_invalid();
                 continue 'jloop;
             }
 
             results.push(bestmsg);
+            stats.record_valid();
         }
     }
 
-    results
+    (results, stats)
 }
 
 fn check_preamble(preamble: &[u16]) -> Option<(i32, u32, u32)> {
