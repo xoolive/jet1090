@@ -49,6 +49,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::error;
 use url::Url;
 
+use crate::health::{self, SharedHealth, SourceStatus};
+
 #[cfg(feature = "sdr")]
 const MODES_FREQ: f64 = 1.09e9;
 #[cfg(feature = "sdr")]
@@ -667,7 +669,11 @@ impl Source {
         serial: u64,
         name: Option<String>,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+        health: SharedHealth,
     ) -> tokio::task::JoinHandle<()> {
+        let source_label = name
+            .clone()
+            .unwrap_or_else(|| format!("source-{serial:016x}"));
         match &self.address {
             #[cfg(feature = "rtlsdr")]
             Address::Rtlsdr(path) => {
@@ -1044,11 +1050,22 @@ impl Source {
                     },
                     _ => unreachable!(),
                 };
+                let source_health = health.clone();
+                let status_health = health.clone();
+                let status_label = source_label.clone();
                 tokio::spawn(async move {
                     tokio::select! {
-                        result = beast::receiver(server_address, tx, serial, name) => {
+                        result = beast::receiver(server_address, tx, serial, name, move |status| {
+                            let status = match status {
+                                beast::ConnectionStatus::Connecting => SourceStatus::Connecting,
+                                beast::ConnectionStatus::Healthy => SourceStatus::Healthy,
+                                beast::ConnectionStatus::Reconnecting => SourceStatus::Reconnecting,
+                            };
+                            health::set_source_status(&status_health, &status_label, status);
+                        }) => {
                             if let Err(e) = result {
-                                error!("{}", e.to_string());
+                                health::set_source_status(&source_health, &source_label, SourceStatus::Failed);
+                                error!(source = source_label, error = %e, "Beast receiver stopped");
                             }
                         }
                         _ = shutdown_rx.recv() => {
