@@ -46,7 +46,9 @@ use desperado::IqAsyncSource;
 use desperado::{GainElement, GainElementName};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
-use tracing::error;
+#[cfg(feature = "sdr")]
+use tokio::time::{sleep, Duration};
+use tracing::{error, warn};
 use url::Url;
 
 use crate::health::{self, SharedHealth, SourceStatus};
@@ -60,6 +62,110 @@ const RATE_6M: f64 = 6.0e6;
 
 #[cfg(feature = "rtlsdr")]
 const RTLSDR_GAIN: f64 = 49.6;
+
+#[cfg(any(
+    feature = "rtlsdr",
+    feature = "soapy",
+    feature = "hackrf",
+    feature = "airspy"
+))]
+const SDR_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+#[cfg(any(
+    feature = "rtlsdr",
+    feature = "soapy",
+    feature = "hackrf",
+    feature = "airspy"
+))]
+const SDR_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+#[cfg(any(
+    feature = "rtlsdr",
+    feature = "soapy",
+    feature = "hackrf",
+    feature = "airspy"
+))]
+#[allow(clippy::too_many_arguments)]
+async fn supervise_sdr(
+    config: DeviceConfig,
+    tx: Sender<TimedMessage>,
+    serial: u64,
+    rate: f64,
+    name: Option<String>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    health: SharedHealth,
+    source_label: String,
+) {
+    let mut backoff = SDR_INITIAL_BACKOFF;
+    let mut first_attempt = true;
+
+    loop {
+        health::set_source_status(
+            &health,
+            &source_label,
+            if first_attempt {
+                SourceStatus::Connecting
+            } else {
+                SourceStatus::Reconnecting
+            },
+        );
+        first_attempt = false;
+
+        let source = tokio::select! {
+            result = IqAsyncSource::from_device_config(&config) => result,
+            _ = shutdown_rx.recv() => return,
+        };
+        let source = match source {
+            Ok(source) => {
+                health::set_source_status(
+                    &health,
+                    &source_label,
+                    SourceStatus::Healthy,
+                );
+                source
+            }
+            Err(error) => {
+                health::set_source_status(
+                    &health,
+                    &source_label,
+                    SourceStatus::Reconnecting,
+                );
+                warn!(source = source_label, error = %error, "Failed to open SDR source; retrying in {backoff:?}");
+                tokio::select! {
+                    _ = sleep(backoff) => {},
+                    _ = shutdown_rx.recv() => return,
+                }
+                backoff = (backoff * 2).min(SDR_MAX_BACKOFF);
+                continue;
+            }
+        };
+
+        let mut source = source;
+        let outcome = tokio::select! {
+            result = iqread::receiver(tx.clone(), &mut source, serial, rate, name.clone()) => Some(result),
+            _ = shutdown_rx.recv() => None,
+        };
+        if let Err(error) = source.stop().await {
+            warn!(source = source_label, error = %error, "Failed to stop SDR source cleanly");
+        }
+        let Some(outcome) = outcome else { return };
+        match outcome {
+            Ok(()) => return,
+            Err(error) => {
+                health::set_source_status(
+                    &health,
+                    &source_label,
+                    SourceStatus::Reconnecting,
+                );
+                warn!(source = source_label, error = %error, "SDR stream ended; retrying in {backoff:?}");
+                tokio::select! {
+                    _ = sleep(backoff) => {},
+                    _ = shutdown_rx.recv() => return,
+                }
+                backoff = (backoff * 2).min(SDR_MAX_BACKOFF);
+            }
+        }
+    }
+}
 
 /**
 * A structure to describe the endpoint to access data.
@@ -707,27 +813,24 @@ impl Source {
                 // Use bias_tee from config or default to false
                 let bias_tee = self.bias_tee.unwrap_or(false);
 
-                tokio::spawn(async move {
-                    let rtlsdr_config = RtlSdrConfig {
-                        device,
-                        center_freq: MODES_FREQ as u32,
-                        sample_rate: sample_rate as u32,
-                        gain,
-                        bias_tee,
-                        freq_correction_ppm: 0,
-                    };
-                    let config = DeviceConfig::RtlSdr(rtlsdr_config);
-                    let source = IqAsyncSource::from_device_config(&config)
-                        .await
-                        .expect("Failed to create RTL-SDR source");
-
-                    tokio::select! {
-                        _ = iqread::receiver(tx, source, serial, sample_rate, name) => {},
-                        _ = shutdown_rx.recv() => {
-                            // Silent shutdown
-                        }
-                    }
-                })
+                let config = DeviceConfig::RtlSdr(RtlSdrConfig {
+                    device,
+                    center_freq: MODES_FREQ as u32,
+                    sample_rate: sample_rate as u32,
+                    gain,
+                    bias_tee,
+                    freq_correction_ppm: 0,
+                });
+                tokio::spawn(supervise_sdr(
+                    config,
+                    tx,
+                    serial,
+                    sample_rate,
+                    name,
+                    shutdown_rx,
+                    health,
+                    source_label,
+                ))
             }
             #[cfg(feature = "airspy")]
             Address::Airspy(path) => {
@@ -755,34 +858,28 @@ impl Source {
                 let mixer_gain = config.mixer_gain;
                 let vga_gain = config.vga_gain;
 
-                tokio::spawn(async move {
-                    let airspy_config = AirspyConfig {
-                        device,
-                        center_freq: MODES_FREQ as u32,
-                        sample_rate: sample_rate as u32,
-                        gain,
-                        bias_tee,
-                        packing: false,
-                        lna_gain,
-                        mixer_gain,
-                        vga_gain,
-                        gain_mode: AirspyGainMode::Sensitivity,
-                    };
-
-                    let source = IqAsyncSource::Airspy(
-                        desperado::airspy::AsyncAirspySdrReader::new(
-                            &airspy_config,
-                        )
-                        .expect("Failed to create Airspy source"),
-                    );
-
-                    tokio::select! {
-                        _ = iqread::receiver(tx, source, serial, sample_rate, name) => {},
-                        _ = shutdown_rx.recv() => {
-                            // Silent shutdown
-                        }
-                    }
-                })
+                let config = DeviceConfig::Airspy(AirspyConfig {
+                    device,
+                    center_freq: MODES_FREQ as u32,
+                    sample_rate: sample_rate as u32,
+                    gain,
+                    bias_tee,
+                    packing: false,
+                    lna_gain,
+                    mixer_gain,
+                    vga_gain,
+                    gain_mode: AirspyGainMode::Sensitivity,
+                });
+                tokio::spawn(supervise_sdr(
+                    config,
+                    tx,
+                    serial,
+                    sample_rate,
+                    name,
+                    shutdown_rx,
+                    health,
+                    source_label,
+                ))
             }
             #[cfg(feature = "hackrf")]
             Address::Hackrf(path) => {
@@ -830,29 +927,24 @@ impl Source {
                 let sample_rate = self.sample_rate.unwrap_or(RATE_6M);
                 let bias_tee = self.bias_tee.unwrap_or(false);
 
-                tokio::spawn(async move {
-                    let center_freq = (MODES_FREQ as i64 + freq_offset) as u64;
-                    let hackrf_config = HackRfConfig {
-                        device_index: device_idx,
-                        center_freq,
-                        sample_rate: sample_rate as u32,
-                        gain,
-                        amp_enable,
-                        bias_tee,
-                    };
-
-                    let config = DeviceConfig::HackRf(hackrf_config);
-                    let source = IqAsyncSource::from_device_config(&config)
-                        .await
-                        .expect("Failed to create HackRF source");
-
-                    tokio::select! {
-                        _ = iqread::receiver(tx, source, serial, sample_rate, name) => {},
-                        _ = shutdown_rx.recv() => {
-                            // Silent shutdown
-                        }
-                    }
-                })
+                let config = DeviceConfig::HackRf(HackRfConfig {
+                    device_index: device_idx,
+                    center_freq: (MODES_FREQ as i64 + freq_offset) as u64,
+                    sample_rate: sample_rate as u32,
+                    gain,
+                    amp_enable,
+                    bias_tee,
+                });
+                tokio::spawn(supervise_sdr(
+                    config,
+                    tx,
+                    serial,
+                    sample_rate,
+                    name,
+                    shutdown_rx,
+                    health,
+                    source_label,
+                ))
             }
             #[cfg(feature = "soapy")]
             Address::Soapy(soapy_path) => {
@@ -865,27 +957,24 @@ impl Source {
                 // Use sample_rate from config or default to 2.4 MS/s
                 let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
 
-                tokio::spawn(async move {
-                    let soapy_config = SoapyConfig {
-                        args,
-                        center_freq: MODES_FREQ,
-                        sample_rate,
-                        channel: 0,
-                        gain,
-                        bias_tee,
-                    };
-                    let config = DeviceConfig::Soapy(soapy_config);
-                    let source = IqAsyncSource::from_device_config(&config)
-                        .await
-                        .expect("Failed to create SoapySDR source");
-
-                    tokio::select! {
-                        _ = iqread::receiver(tx, source, serial, sample_rate, name) => {},
-                        _ = shutdown_rx.recv() => {
-                            // Silent shutdown
-                        }
-                    }
-                })
+                let config = DeviceConfig::Soapy(SoapyConfig {
+                    args,
+                    center_freq: MODES_FREQ,
+                    sample_rate,
+                    channel: 0,
+                    gain,
+                    bias_tee,
+                });
+                tokio::spawn(supervise_sdr(
+                    config,
+                    tx,
+                    serial,
+                    sample_rate,
+                    name,
+                    shutdown_rx,
+                    health,
+                    source_label,
+                ))
             }
             #[cfg(feature = "sdr")]
             Address::File(file_path) => {

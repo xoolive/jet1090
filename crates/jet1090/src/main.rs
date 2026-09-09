@@ -12,10 +12,10 @@ mod tui;
 mod util;
 mod web;
 
+use crate::health::SharedHealth;
 use crate::tui::Event;
 use crate::util::expanduser;
 use crate::web::serve_web_api;
-use crate::{health::SharedHealth, health::SourceStatus};
 use clap::{Command, CommandFactory, Parser, ValueHint};
 use clap_complete::{generate, Generator};
 use crossterm::event::KeyCode;
@@ -648,11 +648,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .clone()
             .unwrap_or_else(|| format!("source-{serial:016x}"));
         health::register_source(&health, source_label.clone());
-        health::set_source_status(
-            &health,
-            &source_label,
-            SourceStatus::Healthy,
-        );
         let shutdown_rx = shutdown_tx.subscribe();
         let handle = source.receiver(
             tx_copy,

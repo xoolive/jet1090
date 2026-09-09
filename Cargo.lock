@@ -198,6 +198,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-compression"
+version = "0.4.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "515a1f282e33d55983c499d7e9e87082e81cbc32974825bf9032f928392d5844"
+dependencies = [
+ "compression-codecs",
+ "compression-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "async-executor"
 version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -822,6 +834,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "compression-codecs"
+version = "0.4.39"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fe67f2944eef52fc7b106b8c9450d243a88701a0c065f7f57235e76abaed7df"
+dependencies = [
+ "compression-core",
+ "zstd",
+ "zstd-safe",
+]
+
+[[package]]
+name = "compression-core"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e8ccc4ea9f6acc32d102c0f6d471d11d913ad15f20c04de743374861fa1d414"
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1370,9 +1399,8 @@ dependencies = [
 [[package]]
 name = "desperado"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a5eca4e77dafb9389d12160b079e99e5b018ff0914e09efc0b74e6e3a7657bb"
 dependencies = [
+ "async-compression",
  "biquad",
  "dirs",
  "futures",
@@ -1385,6 +1413,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
@@ -4081,8 +4110,6 @@ dependencies = [
 [[package]]
 name = "rs-hackrf"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "affa4ab24c6d4463c8ca53272ebf5ecacda5739df891be62459bd10d943bb49d"
 dependencies = [
  "nusb",
  "thiserror 2.0.18",
@@ -4092,8 +4119,6 @@ dependencies = [
 [[package]]
 name = "rs-rtl"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b14d2eb2473e57beeefdcdca0d7cbc51c5f312e0a9c96ff6374393d5ff4b54b1"
 dependencies = [
  "nusb",
  "thiserror 2.0.18",
@@ -4103,8 +4128,6 @@ dependencies = [
 [[package]]
 name = "rs-spy"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c3b1c25996092982f9f8316df5922fb52f85a8ee3c119cce9748d001843db95"
 dependencies = [
  "num-complex",
  "nusb",
