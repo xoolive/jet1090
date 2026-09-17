@@ -2,12 +2,16 @@ use rs1090::data::airports::{Airport, AIRPORTS};
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
+use futures::stream::{self, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use std::convert::Infallible;
 use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::sensor::Sensor;
@@ -69,6 +73,34 @@ async fn track(
     }
 }
 
+/// Streams decoded messages as server-sent events, one message per event,
+/// in the same JSON format as the `.jsonl` output and the Redis feed
+async fn stream_messages(
+    State(shared): State<Arc<SharedState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = shared.stream_tx.subscribe();
+    let events = stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(json) => return Some((json, rx)),
+                Err(RecvError::Lagged(skipped)) => {
+                    tracing::debug!(
+                        skipped,
+                        "slow /stream client skipped messages"
+                    );
+                    // A plain retry would resume from the oldest buffered
+                    // message and leave the client permanently behind
+                    rx = rx.resubscribe();
+                }
+                Err(RecvError::Closed) => return None,
+            }
+        }
+    })
+    .map(|json| Ok(Event::default().data(json.as_str())));
+
+    Sse::new(events).keep_alive(KeepAlive::default())
+}
+
 /// Returns decoding information about all sensors
 async fn sensors(State(shared): State<Arc<SharedState>>) -> impl IntoResponse {
     let state_vectors = shared.state_vectors.read().await;
@@ -128,6 +160,7 @@ async fn home() -> Html<&'static str> {
         <li>/track?icao24={icao24}&amp;since={timestamp}: returns the trajectory of a given aircraft since the given timestamp (optional)</li>\
         <li><a href=\"/sensors\">/sensors</a>: returns information about all sensors</li>\
         <li>/airports?q={string}: returns a list of potential airports matching the query string</li>\
+        <li><a href=\"/stream\">/stream</a>: live feed of decoded messages as server-sent events</li>\
         </ul>",
     )
 }
@@ -138,7 +171,7 @@ async fn not_found() -> Response {
         StatusCode::NOT_FOUND,
         Json(ErrorMessage {
             code: StatusCode::NOT_FOUND.as_u16(),
-            message: "Route not found, try one of /, /all, /icao24, /track?icao24={icao24}, /sensors or /airports?q={string}".into(),
+            message: "Route not found, try one of /, /all, /icao24, /track?icao24={icao24}, /sensors, /airports?q={string} or /stream".into(),
         }),
     )
         .into_response()
@@ -157,6 +190,7 @@ pub async fn serve_web_api(shared: Arc<SharedState>, port: u16) {
         .route("/track", get(track))
         .route("/sensors", get(sensors))
         .route("/airports", get(airports))
+        .route("/stream", get(stream_messages))
         .fallback(not_found)
         .with_state(shared)
         .layer(cors);

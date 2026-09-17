@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::warn;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -97,11 +97,11 @@ struct Options {
     #[serde(default)]
     no_interactive_expire: bool,
 
-    /// Downlink formats to select for stdout, file output and history in REST API (keep empty to select all)
+    /// Downlink formats to select for stdout, file output, Redis, /stream and history in REST API (keep empty to select all)
     #[arg(long, value_name = "DF")]
     df_filter: Option<Vec<u16>>,
 
-    /// Aircraft addresses to select for stdout, file output and history in REST API (keep empty to select all)
+    /// Aircraft addresses to select for stdout, file output, Redis, /stream and history in REST API (keep empty to select all)
     #[arg(long, value_name = "ICAO24")]
     aircraft_filter: Option<Vec<ICAO>>,
 
@@ -747,6 +747,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await;
                 }
+
+                // Fails only when nobody is subscribed to /stream
+                let _ = shared_dec.stream_tx.send(Arc::new(json));
             }
         }
 
@@ -836,11 +839,18 @@ pub struct SharedState {
     quit_tx: watch::Sender<bool>,
     /// Clear screen flag - lock-free atomic
     should_clear: Arc<AtomicBool>,
+    /// Serialized messages for /stream subscribers
+    stream_tx: broadcast::Sender<Arc<String>>,
 }
+
+/// How far a /stream client may fall behind before it is moved to the live
+/// edge of the feed and the messages in between are dropped
+const STREAM_BUFFER: usize = 4096;
 
 impl SharedState {
     fn new(sensors: BTreeMap<u64, Sensor>) -> Self {
         let (quit_tx, _quit_rx) = watch::channel(false);
+        let (stream_tx, _stream_rx) = broadcast::channel(STREAM_BUFFER);
 
         Self {
             state_vectors: Arc::new(RwLock::new(BTreeMap::new())),
@@ -848,6 +858,7 @@ impl SharedState {
             should_quit: Arc::new(AtomicBool::new(false)),
             quit_tx,
             should_clear: Arc::new(AtomicBool::new(false)),
+            stream_tx,
         }
     }
 

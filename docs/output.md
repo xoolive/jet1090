@@ -87,12 +87,26 @@ The following endpoint are provided:
 - `/track?icao24=xxx`: returns a list of all received messages for a given aircraft.
 - `/sensors`: returns information about all sensors
 - `/airports?q=xxx`: returns a list of airports matching the query string
+- `/stream`: a live feed of decoded messages as [server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) (see below)
 
 !!! warning
 
     By default, all the history remains accessible until the program exits but this behaviour can drain your RAM memory quickly if you see many aircraft. You can use the `--history-expire` parameter to limit the history to a number of minutes before the current time.
 
     You can also completely deactivate the storing of messages with the `--history-expire 0` option.
+
+## Live stream
+
+The `/stream` endpoint pushes every decoded message as it arrives, in the same JSON format as the `.jsonl` output and the Redis feed. It uses server-sent events, so any browser can consume it without extra libraries:
+
+```javascript
+const source = new EventSource("http://localhost:8080/stream");
+source.onmessage = (event) => console.log(JSON.parse(event.data));
+```
+
+The `--df-filter` and `--aircraft-filter` options apply before the stream, so a message excluded there never reaches any subscriber.
+
+A client that reads too slowly is moved to the live edge of the feed and misses the messages in between. The decoder never waits for a client.
 
 ## WebSocket
 
