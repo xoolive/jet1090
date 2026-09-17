@@ -16,9 +16,7 @@ pub struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        // TODO define what do to upon panic, but this commented behaviour is
-        // actually not a great idea since the app may still be partially running
-        // let _ = restore();
+        let _ = restore();
     }
 }
 
@@ -27,9 +25,7 @@ pub fn init() -> io::Result<Tui> {
     // Install custom panic hook to restore terminal before displaying panic
     let original_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
-        // TODO define what do to upon panic, but this commented behaviour is
-        // actually not a great idea since the app may still be partially running
-        // let _ = restore();
+        let _ = restore();
         original_hook(panic_info);
     }));
 

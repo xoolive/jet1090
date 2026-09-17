@@ -330,24 +330,41 @@ async fn connect(address: &BeastSource) -> io::Result<DataSource> {
     Ok(source)
 }
 
+/// Connection lifecycle events emitted by [`receiver`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionStatus {
+    Connecting,
+    Healthy,
+    Reconnecting,
+}
+
 /// Receive Beast messages from `address` and forward them to `tx`.
 ///
 /// Whenever the connection cannot be opened, gets closed by the peer, or
 /// stays silent for five minutes, it is opened again after an exponential
 /// backoff capped at 30 seconds. The function only returns once the
 /// receiving end of `tx` has been dropped.
-pub async fn receiver(
+pub async fn receiver<F>(
     address: BeastSource,
     tx: mpsc::Sender<TimedMessage>,
     serial: u64,
     name: Option<String>,
-) -> io::Result<()> {
+    on_status: F,
+) -> io::Result<()>
+where
+    F: Fn(ConnectionStatus),
+{
     let mut backoff = INITIAL_BACKOFF;
 
+    on_status(ConnectionStatus::Connecting);
     loop {
         let source = match connect(&address).await {
-            Ok(source) => source,
+            Ok(source) => {
+                on_status(ConnectionStatus::Healthy);
+                source
+            }
             Err(error) => {
+                on_status(ConnectionStatus::Reconnecting);
                 warn!(
                     "Failed to connect to {address} ({error}), retrying in {backoff:?}"
                 );
@@ -375,6 +392,7 @@ pub async fn receiver(
             }
         }
 
+        on_status(ConnectionStatus::Reconnecting);
         warn!("Connection to {address} lost, reconnecting in {backoff:?}");
         sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -469,8 +487,13 @@ mod tests {
         });
 
         let (tx, mut rx) = mpsc::channel(16);
-        let client =
-            tokio::spawn(receiver(BeastSource::Tcp(address), tx, 0, None));
+        let client = tokio::spawn(receiver(
+            BeastSource::Tcp(address),
+            tx,
+            0,
+            None,
+            |_| {},
+        ));
 
         let first = timeout(Duration::from_secs(5), rx.recv())
             .await

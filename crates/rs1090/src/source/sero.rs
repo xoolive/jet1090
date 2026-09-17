@@ -139,9 +139,11 @@ impl SeroClient {
                     let jump = jump.clone();
                     async move {
                         let tunnel = TunnelledSero { jump };
-                        let stream = tunnel.connect().await;
-                        let wrapped_stream = TokioIo::new(stream);
-                        Ok::<_, std::io::Error>(wrapped_stream)
+                        let stream =
+                            tunnel.connect().await.map_err(|error| {
+                                std::io::Error::other(error.to_string())
+                            })?;
+                        Ok::<_, std::io::Error>(TokioIo::new(stream))
                     }
                 });
                 endpoint.connect_with_connector(connector).await?

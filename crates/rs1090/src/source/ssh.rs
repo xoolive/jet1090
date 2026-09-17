@@ -14,12 +14,16 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     process::{ChildStdin, ChildStdout, Command},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 pub static CONNECTION_MAP: Lazy<Arc<Mutex<HashMap<String, Client>>>> =
     Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+/// Prevent concurrent first-time connections from racing before the cache is
+/// populated. This matters when several sources share one ProxyJump host.
+static CONNECTION_SETUP_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 pub struct TunnelledTcp {
     pub address: String,
@@ -42,119 +46,113 @@ async fn authenticate_server(
     mut client_rx: ClientReceiver,
     host: String,
     port: u16,
-) {
-    let mut hosts_path = dirs::home_dir().unwrap();
+) -> Result<(), BoxError> {
+    let mut hosts_path = dirs::home_dir().ok_or_else(|| {
+        BoxError::from("Could not determine the home directory")
+    })?;
     hosts_path.push(".ssh");
     hosts_path.push("known_hosts");
-
-    let hosts_data =
-        std::fs::read(&hosts_path).expect("Could not read known_hosts file");
-
+    let hosts_data = std::fs::read(&hosts_path).map_err(|error| {
+        BoxError::from(format!(
+            "Could not read {}: {error}",
+            hosts_path.display()
+        ))
+    })?;
     let mut hosts_file = makiko::host_file::File::decode(hosts_data.into());
 
     loop {
-        // Wait for the next event.
-        let event = client_rx
-            .recv()
-            .await
-            .expect("Error while receiving client event");
-
-        // Exit the loop when the client has closed.
+        let event = client_rx.recv().await.map_err(|error| {
+            BoxError::from(format!(
+                "Error while receiving SSH client event: {error}"
+            ))
+        })?;
         let Some(event) = event else { break };
 
         if let makiko::ClientEvent::ServerPubkey(pubkey, accept) = event {
-            info!(
-                "Server pubkey type {}, fingerprint {}",
-                pubkey.type_str(),
-                pubkey.fingerprint()
-            );
-
             match hosts_file.match_host_port_key(&host, port, &pubkey) {
-                makiko::host_file::KeyMatch::Accepted(entries) => {
-                    info!("Found the server key in known_hosts file");
-                    for entry in entries.iter() {
-                        info!("At line {}", entry.line());
-                    }
-                    accept.accept();
+                makiko::host_file::KeyMatch::Accepted(_) => accept.accept(),
+                makiko::host_file::KeyMatch::Revoked(_) => {
+                    return Err(BoxError::from(
+                        "The SSH server key was revoked in known_hosts",
+                    ));
                 }
-                makiko::host_file::KeyMatch::Revoked(_entry) => {
-                    panic!("The server key was revoked in known_hosts file");
-                }
-                makiko::host_file::KeyMatch::OtherKeys(entries) => {
-                    warn!("The known_hosts file specifies other keys for this server:");
-                    for entry in entries.iter() {
-                        println!(
-                            "At line {}, pubkey type {}, fingerprint {}",
-                            entry.line(),
-                            entry.pubkey().type_str(),
-                            entry.pubkey().fingerprint()
-                        );
-                    }
-                    panic!("Aborting, you might be target of a man-in-the-middle attack!");
+                makiko::host_file::KeyMatch::OtherKeys(_) => {
+                    return Err(BoxError::from(
+                        "SSH host key differs from known_hosts; refusing connection",
+                    ));
                 }
                 makiko::host_file::KeyMatch::NotFound => {
-                    info!("Did not find any key for this server in known_hosts file, \
-                            adding it to the file");
-
                     accept.accept();
-
                     hosts_file.append_entry(
                         makiko::host_file::File::entry_builder()
                             .host_port(&host, port)
                             .key(pubkey),
                     );
-                    let hosts_data = hosts_file.encode();
-                    std::fs::write(&hosts_path, &hosts_data).expect(
-                        "Could not write the modified known_hosts file",
-                    );
+                    std::fs::write(&hosts_path, hosts_file.encode()).map_err(
+                        |error| {
+                            BoxError::from(format!(
+                                "Could not update {}: {error}",
+                                hosts_path.display()
+                            ))
+                        },
+                    )?;
                 }
             }
         }
     }
+    Ok(())
 }
 
 async fn authenticate_by_private_key(
     client: &Client,
     user: &str,
     privkey: &Privkey,
-) {
+) -> Result<(), BoxError> {
     let pubkey = privkey.pubkey();
     for pubkey_algo in pubkey.algos().iter().copied() {
-        // Check whether this combination of a public key and algorithm would be
-        // acceptable to the server.
         if client
             .check_pubkey(user.to_string(), &pubkey, pubkey_algo)
             .await
-            .expect("Error when checking a public key")
+            .map_err(|error| {
+                BoxError::from(format!(
+                    "Error when checking an SSH public key: {error}"
+                ))
+            })?
         {
-            // Try to authenticate with the private key
-            let auth_res = client
+            match client
                 .auth_pubkey(user.to_string(), privkey.clone(), pubkey_algo)
                 .await
-                .expect("Error when trying to authenticate");
-
-            // Deal with the possible outcomes of public key authentication.
-            match auth_res {
-                makiko::AuthPubkeyResult::Success => {
-                    info!("We have successfully authenticated using a private key");
-                    return;
-                }
+                .map_err(|error| {
+                    BoxError::from(format!(
+                        "Error authenticating with SSH key: {error}"
+                    ))
+                })? {
+                makiko::AuthPubkeyResult::Success => return Ok(()),
                 makiko::AuthPubkeyResult::Failure(failure) => {
-                    info!(
-                        "The server rejected authentication with {pubkey_algo:?}: {failure:?}"
-                    );
+                    info!("The server rejected authentication with {pubkey_algo:?}: {failure:?}");
                 }
             }
         }
     }
-    panic!("The server does not accept the public key");
+    Err(BoxError::from(
+        "The SSH server does not accept the private key",
+    ))
 }
 
-fn get_params() -> SshConfig {
-    let config_path = dirs::home_dir().unwrap().join(".ssh").join("config");
-
-    let err_msg = format!("{config_path:?} does not exist");
-    let mut reader = BufReader::new(File::open(&config_path).expect(&err_msg));
+fn get_params() -> Result<SshConfig, BoxError> {
+    let config_path = dirs::home_dir()
+        .ok_or_else(|| {
+            BoxError::from("Could not determine the home directory")
+        })?
+        .join(".ssh")
+        .join("config");
+    let file = File::open(&config_path).map_err(|error| {
+        BoxError::from(format!(
+            "Could not read {}: {error}",
+            config_path.display()
+        ))
+    })?;
+    let mut reader = BufReader::new(file);
 
     SshConfig::default()
         .parse(
@@ -162,21 +160,24 @@ fn get_params() -> SshConfig {
             ParseRule::ALLOW_UNKNOWN_FIELDS
                 | ParseRule::ALLOW_UNSUPPORTED_FIELDS,
         )
-        .unwrap_or_else(|_| {
-            panic!("Failed to parse configuration file {config_path:?}")
+        .map_err(|error| {
+            BoxError::from(format!(
+                "Failed to parse {}: {error}",
+                config_path.display()
+            ))
         })
 }
 
-fn get_default_username() -> String {
+fn get_default_username() -> Result<String, BoxError> {
     #[cfg(target_os = "windows")]
-    let username = std::env::var("USERNAME").unwrap_or_else(|_| {
-        panic!("Could not determine the current Windows user name")
-    });
+    let username = std::env::var("USERNAME").map_err(|_| {
+        BoxError::from("Could not determine the current Windows user name")
+    })?;
     #[cfg(not(target_os = "windows"))]
-    let username = std::env::var("USER").unwrap_or_else(|_| {
-        panic!("Could not determine the current user name")
-    });
-    username
+    let username = std::env::var("USER").map_err(|_| {
+        BoxError::from("Could not determine the current user name")
+    })?;
+    Ok(username)
 }
 
 enum Io {
@@ -190,32 +191,57 @@ enum Io {
  * and proxy jumps. It also handles authentication using private keys.
  * It returns a Client object that can be used to interact with the server.
  */
-#[async_recursion::async_recursion]
 async fn connect_server(
     server: &str,
     params: &SshConfig,
     connection_map: Arc<Mutex<HashMap<String, Client>>>,
 ) -> Result<Client, BoxError> {
+    let _setup_lock = CONNECTION_SETUP_LOCK.lock().await;
+    connect_server_inner(server, params, connection_map).await
+}
+
+#[async_recursion::async_recursion]
+async fn connect_server_inner(
+    server: &str,
+    params: &SshConfig,
+    connection_map: Arc<Mutex<HashMap<String, Client>>>,
+) -> Result<Client, BoxError> {
+    debug!(server, "Starting SSH connection setup");
     // Check if the server is already connected
     // If so, return the existing connection
     if connection_map.lock().await.contains_key(server) {
         info!("Reusing existing connection to {server}");
-        return Ok(connection_map.lock().await.get(server).unwrap().clone());
+        return connection_map.lock().await.get(server).cloned().ok_or_else(
+            || BoxError::from("SSH connection cache entry disappeared"),
+        );
     }
 
     // Otherwise create a new connection
     let server_params = params.query(server);
-    let hostname = server_params.host_name.unwrap();
+    let hostname = server_params.host_name.ok_or_else(|| {
+        BoxError::from(format!(
+            "No hostname configured for SSH host '{server}'"
+        ))
+    })?;
     let port = server_params.port.unwrap_or(22);
-    let user = server_params.user.unwrap_or(get_default_username());
+    let user = match server_params.user {
+        Some(user) => user,
+        None => get_default_username()?,
+    };
 
-    let io = match server_params.unsupported_fields.get("proxyjump") {
+    // ProxyJump is a parsed ssh2-config field. Reading it from
+    // `unsupported_fields` ignores normal ProxyJump entries and attempts a
+    // direct TCP connection instead.
+    let io = match server_params.proxy_jump.as_ref() {
         None => match server_params.unsupported_fields.get("proxycommand") {
             None => {
                 Io::Tcp(TcpStream::connect((hostname.to_owned(), port)).await?)
             }
             Some(args) => {
-                let mut command = Command::new(args[0].clone());
+                let command_name = args.first().ok_or_else(|| {
+                    BoxError::from("SSH ProxyCommand is empty")
+                })?;
+                let mut command = Command::new(command_name);
                 for arg in args[1..].iter() {
                     let arg = arg
                         // Replace %% with %
@@ -231,14 +257,19 @@ async fn connect_server(
                         .stdin(std::process::Stdio::piped())
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped()),
-                ))
+                )?)
             }
         },
         Some(jump) => {
-            let jump_server = jump.first().expect("No jump host specified");
-            let jump_client =
-                connect_server(jump_server, params, connection_map.clone())
-                    .await?;
+            let jump_server = jump
+                .first()
+                .ok_or_else(|| BoxError::from("No SSH jump host specified"))?;
+            let jump_client = connect_server_inner(
+                jump_server,
+                params,
+                connection_map.clone(),
+            )
+            .await?;
             let channel_config = ChannelConfig::default();
             let origin_addr = ("127.0.0.1".into(), 0);
             let (tunnel, tunnel_rx) = jump_client
@@ -248,43 +279,72 @@ async fn connect_server(
                     origin_addr,
                 )
                 .await
-                .expect("Could not open a tunnel");
+                .map_err(|error| {
+                    BoxError::from(format!(
+                        "Could not open SSH tunnel: {error}"
+                    ))
+                })?;
             Io::Tunnel(TunnelStream::new(tunnel, tunnel_rx))
         }
     };
 
+    debug!(server, hostname, port, "Opening SSH client transport");
     let config = ClientConfig::default();
     let (client, client_rx) = match io {
         Io::Tcp(socket) => {
             let (client, client_rx, client_fut) = Client::open(socket, config)?;
             tokio::spawn(async move {
-                client_fut.await.expect("Error in client future");
+                if let Err(error) = client_fut.await {
+                    warn!("SSH client connection closed: {error}");
+                }
             });
             (client, client_rx)
         }
         Io::Tunnel(io) => {
             let (client, client_rx, client_fut) = Client::open(io, config)?;
             tokio::spawn(async move {
-                client_fut.await.expect("Error in client future");
+                if let Err(error) = client_fut.await {
+                    warn!("SSH client connection closed: {error}");
+                }
             });
             (client, client_rx)
         }
         Io::Proxy(io) => {
             let (client, client_rx, client_fut) = Client::open(io, config)?;
             tokio::spawn(async move {
-                client_fut.await.expect("Error in client future");
+                if let Err(error) = client_fut.await {
+                    warn!("SSH client connection closed: {error}");
+                }
             });
             (client, client_rx)
         }
     };
 
-    tokio::task::spawn(authenticate_server(client_rx, hostname, port));
-
-    let ssh_folder = dirs::home_dir().unwrap().join(".ssh");
-    let mut decoded_privkey = None;
-    let identity_files = server_params.identity_file.unwrap_or_else(|| {
-        vec![ssh_folder.join("id_rsa"), ssh_folder.join("id_ed25519")]
+    tokio::spawn(async move {
+        if let Err(error) = authenticate_server(client_rx, hostname, port).await
+        {
+            warn!("SSH host verification failed: {error}");
+        }
     });
+
+    let ssh_folder = dirs::home_dir()
+        .ok_or_else(|| {
+            BoxError::from("Could not determine the home directory")
+        })?
+        .join(".ssh");
+    debug!(server, "Selecting SSH identity file");
+    let mut decoded_privkey = None;
+    let configured_identity_files =
+        server_params.identity_file.unwrap_or_else(|| {
+            vec![ssh_folder.join("id_rsa"), ssh_folder.join("id_ed25519")]
+        });
+    // OpenSSH's `IdentityFile none` clears inherited identities. ssh2-config
+    // preserves it as a path, so apply the reset before trying keys.
+    let identity_files = configured_identity_files
+        .iter()
+        .rposition(|path| path == std::path::Path::new("none"))
+        .map(|index| configured_identity_files[index + 1..].to_vec())
+        .unwrap_or(configured_identity_files);
     for file in identity_files.iter() {
         let filename = file.as_os_str();
         if let Ok(privkey) = tokio::fs::read(file).await {
@@ -328,9 +388,14 @@ async fn connect_server(
             };
         }
     }
-    let privkey =
-        decoded_privkey.expect("None of the identity files could be decoded");
-    authenticate_by_private_key(&client, &user, &privkey).await;
+    let privkey = decoded_privkey.ok_or_else(|| {
+        BoxError::from(
+            "None of the configured SSH identity files could be decoded",
+        )
+    })?;
+    debug!(server, user, "Authenticating SSH client");
+    authenticate_by_private_key(&client, &user, &privkey).await?;
+    debug!(server, "SSH client authenticated");
 
     connection_map
         .lock()
@@ -342,7 +407,7 @@ async fn connect_server(
 
 impl TunnelledTcp {
     pub async fn connect(&self) -> Result<TunnelReceiver, BoxError> {
-        let params = get_params();
+        let params = get_params()?;
 
         let target_client =
             connect_server(&self.jump, &params, CONNECTION_MAP.clone())
@@ -359,11 +424,14 @@ impl TunnelledTcp {
         let connect_addr = (self.address.to_owned(), self.port);
         let origin_addr = ("0.0.0.0".into(), 0);
 
-        let err_msg = format!("Could not open a tunnel to {connect_addr:?}");
         let (_tunnel, tunnel_rx) = target_client
-            .connect_tunnel(channel_config, connect_addr, origin_addr)
+            .connect_tunnel(channel_config, connect_addr.clone(), origin_addr)
             .await
-            .expect(&err_msg);
+            .map_err(|error| {
+                BoxError::from(format!(
+                    "Could not open a tunnel to {connect_addr:?}: {error}"
+                ))
+            })?;
 
         Ok(tunnel_rx)
     }
@@ -371,7 +439,7 @@ impl TunnelledTcp {
 
 impl TunnelledWebsocket {
     pub async fn connect(&self) -> Result<TunnelStream, BoxError> {
-        let params = get_params();
+        let params = get_params()?;
 
         let target_client =
             connect_server(&self.jump, &params, CONNECTION_MAP.clone())
@@ -388,34 +456,44 @@ impl TunnelledWebsocket {
         let connect_addr = (self.address.to_owned(), self.port);
         let origin_addr = ("0.0.0.0".into(), 0);
 
-        let err_msg = format!("Could not open a tunnel to {connect_addr:?}");
         let (tunnel, tunnel_rx) = target_client
-            .connect_tunnel(channel_config, connect_addr, origin_addr)
+            .connect_tunnel(channel_config, connect_addr.clone(), origin_addr)
             .await
-            .expect(&err_msg);
+            .map_err(|error| {
+                BoxError::from(format!(
+                    "Could not open a tunnel to {connect_addr:?}: {error}"
+                ))
+            })?;
 
         Ok(TunnelStream::new(tunnel, tunnel_rx))
     }
 }
 
 impl TunnelledSero {
-    pub async fn connect(&self) -> TunnelStream {
-        let params = get_params();
-
+    pub async fn connect(&self) -> Result<TunnelStream, BoxError> {
+        let params = get_params()?;
         let target_client =
             connect_server(&self.jump, &params, CONNECTION_MAP.clone())
                 .await
-                .expect("Could not connect to jump host");
+                .map_err(|error| {
+                    BoxError::from(format!(
+                        "Could not connect to Sero jump host {}: {error}",
+                        self.jump
+                    ))
+                })?;
         let channel_config = makiko::ChannelConfig::default();
         let connect_addr = ("api.secureadsb.com".to_string(), 4201);
         let origin_addr = ("0.0.0.0".into(), 0);
-
         let (tunnel, tunnel_rx) = target_client
             .connect_tunnel(channel_config, connect_addr, origin_addr)
             .await
-            .expect("Could not open a tunnel to api.secureadsb.com");
+            .map_err(|error| {
+                BoxError::from(format!(
+                    "Could not open a tunnel to api.secureadsb.com: {error}"
+                ))
+            })?;
 
-        TunnelStream::new(tunnel, tunnel_rx)
+        Ok(TunnelStream::new(tunnel, tunnel_rx))
     }
 }
 
@@ -426,11 +504,17 @@ pub struct ProxyCommand {
 }
 
 impl ProxyCommand {
-    pub fn new(command: &mut Command) -> Self {
-        let mut command = command.spawn().expect("failed to spawn");
-        let stdin = command.stdin.take().expect("failed to open stdin");
-        let stdout = command.stdout.take().expect("failed to open stdout");
-        ProxyCommand { stdin, stdout }
+    pub fn new(command: &mut Command) -> Result<Self, BoxError> {
+        let mut command = command.spawn().map_err(|error| {
+            BoxError::from(format!("Failed to spawn SSH ProxyCommand: {error}"))
+        })?;
+        let stdin = command.stdin.take().ok_or_else(|| {
+            BoxError::from("SSH ProxyCommand did not provide stdin")
+        })?;
+        let stdout = command.stdout.take().ok_or_else(|| {
+            BoxError::from("SSH ProxyCommand did not provide stdout")
+        })?;
+        Ok(ProxyCommand { stdin, stdout })
     }
 }
 
