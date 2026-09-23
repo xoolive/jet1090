@@ -15,7 +15,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{
     tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use std::collections::HashSet;
 use std::fmt;
@@ -385,7 +385,7 @@ where
                 backoff = INITIAL_BACKOFF;
             }
             let tmsg = process_radarcape(&msg, serial, name.clone());
-            info!("Received {}", tmsg);
+            trace!("Received {}", tmsg);
             if tx.send(tmsg).await.is_err() {
                 // The consumer is gone, so there is no point reconnecting
                 return Ok(());
