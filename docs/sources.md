@@ -240,3 +240,11 @@ websocat ws://localhost:9876/5678
 ## SeRo Systems API
 
 If you have a token for the [SeRo Systems API](https://doc.sero-systems.de/api/), include it in your [configuration file](config.md#sero-systems) with the `sero.token` entry.
+
+For receptions declared as GPS time-of-week and synchronized to GNSS or an
+atomic clock, jet1090 uses the earliest usable capture time as the message's
+event timestamp. Client observation time remains in `metadata.system_timestamp`.
+This preserves measurement spacing when streamed frames arrive in bursts.
+Uptime, unknown/unsynchronized timing and out-of-range clock values fall back
+to client observation time; they are not converted into absolute GNSS times.
+No additional configuration is required. Other sources' timing is unchanged.

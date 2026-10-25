@@ -13,6 +13,17 @@
 - Cover legacy boolean/named sleep settings and optional CLI arguments with
   inline regression tests.
 
+### SeRo reception timing
+
+- Use declared synchronized GPS time-of-week for SeRo message event timestamps,
+  selecting the earliest usable reception while retaining client observation
+  time separately. Keep uptime/unknown/unusable timing on the arrival fallback;
+  trust protocol metadata without clock scoring or a new timing module.
+- Resolve GPS week/day boundaries with checked conversion, preserve sensor IDs
+  and frame contents, and skip reception metadata without a sensor identity.
+- Guard unsigned reorder-age subtraction for late packets without changing
+  actual timestamps, window defaults, CPR limits, Beast or native SDR timing.
+
 ### SeRo source health
 
 - Give unnamed SeRo subscriptions recognizable opaque labels instead of the

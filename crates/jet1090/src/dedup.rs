@@ -118,7 +118,10 @@ pub async fn deduplicate_messages(
             while !emission_buffer.is_empty() {
                 let msg_timestamp_ms =
                     (emission_buffer[0].timestamp * 1e3) as u128;
-                if timestamp_ms - msg_timestamp_ms > reorder_window as u128 {
+                if timestamp_ms
+                    .checked_sub(msg_timestamp_ms)
+                    .is_some_and(|age| age > u128::from(reorder_window))
+                {
                     let tmsg = emission_buffer.remove(0);
                     if let Err(e) = tx.send(tmsg).await {
                         info!("Failed to send reordered message: {}", e);
@@ -141,5 +144,37 @@ pub async fn deduplicate_messages(
                 info!("Failed to send final buffered message: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn late_packet_does_not_underflow_reordering_age() {
+        let (tx_in, rx_in) = mpsc::channel(3);
+        let (tx_out, mut rx_out) = mpsc::channel(3);
+        let task = tokio::spawn(deduplicate_messages(rx_in, tx_out, 450, 2000));
+        for (timestamp, frame) in [
+            (1000.0, hex::decode("8d40621d58c382d690c8ac2863a7").unwrap()),
+            (1000.5, vec![0; 14]),
+            (999.0, vec![1; 14]),
+        ] {
+            tx_in
+                .send(TimedMessage {
+                    timestamp,
+                    frame,
+                    message: None,
+                    metadata: Vec::new(),
+                    decode_time: None,
+                })
+                .await
+                .unwrap();
+        }
+        drop(tx_in);
+        task.await.unwrap();
+        // The buffered event time is not clamped to the later arrival's clock.
+        assert_eq!(rx_out.recv().await.unwrap().timestamp, 1000.0);
     }
 }

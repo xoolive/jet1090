@@ -6,6 +6,7 @@ mod api {
 use api::{
     se_ro_api_client::SeRoApiClient, ModeSDownlinkFrame,
     ModeSDownlinkFramesRequest, Sensor, SensorInfoRequest, SensorInfoResponse,
+    TimingBase, TimingSyncSource,
 };
 #[cfg(feature = "ssh")]
 use hyper_util::rt::tokio::TokioIo;
@@ -22,9 +23,7 @@ use tonic::{
 };
 use tracing::info;
 
-use crate::decode::time::{
-    now_in_ns, since_gps_week_to_since_today, since_gps_week_to_unix_s,
-};
+use crate::decode::time::{checked_gps_week_to_unix_ns, now_in_ns};
 use crate::prelude::*;
 #[cfg(feature = "ssh")]
 use crate::source::ssh::TunnelledSero;
@@ -88,26 +87,48 @@ where
     while let Some(response) = stream.next().await {
         let msg = response?;
         let bytes = msg.reply.as_slice();
-        let system_timestamp = now_in_ns() as f64 * 1e-9;
-        let metadata = msg
+        let observation_ns = now_in_ns();
+        let system_timestamp = observation_ns as f64 * 1e-9;
+        let metadata: Vec<SensorMetadata> = msg
             .receptions
             .into_iter()
-            .map(|rm| SensorMetadata {
-                system_timestamp,
-                gnss_timestamp: Some(since_gps_week_to_unix_s(
-                    rm.gnss_timestamp,
-                )),
-                nanoseconds: Some(since_gps_week_to_since_today(
-                    rm.gnss_timestamp,
-                )),
-                rssi: Some(rm.signal_level),
-                serial: rm.sensor.unwrap().serial,
-                name: sensor_map.get(&rm.sensor.unwrap().serial).cloned(),
+            .filter_map(|rm| {
+                let sensor = rm.sensor?;
+                // Trust SeRo's declared clock, not the numeric field's name:
+                // SYSTEM_TIME is uptime and cannot be converted as GPS ToW.
+                let synchronized = matches!(
+                    TimingSyncSource::try_from(rm.timing_sync_source),
+                    Ok(TimingSyncSource::Gnss | TimingSyncSource::AtomicClock)
+                );
+                let capture_ns = if rm.timing_base == TimingBase::GpsTow as i32
+                    && synchronized
+                {
+                    checked_gps_week_to_unix_ns(
+                        rm.gnss_timestamp,
+                        observation_ns,
+                    )
+                } else {
+                    None
+                };
+                Some(SensorMetadata {
+                    system_timestamp,
+                    gnss_timestamp: capture_ns.map(|ns| ns as f64 * 1e-9),
+                    nanoseconds: capture_ns
+                        .map(|ns| (ns % 86_400_000_000_000) as u64),
+                    rssi: Some(rm.signal_level),
+                    serial: sensor.serial,
+                    name: sensor_map.get(&sensor.serial).cloned(),
+                })
             })
             .collect();
+        let timestamp = metadata
+            .iter()
+            .filter_map(|meta| meta.gnss_timestamp)
+            .min_by(f64::total_cmp)
+            .unwrap_or(system_timestamp);
 
         let tmsg = TimedMessage {
-            timestamp: system_timestamp,
+            timestamp,
             frame: bytes.to_vec(),
             message: None,
             metadata,
@@ -218,6 +239,202 @@ impl SeroClient {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn reception_at(
+        unix_ns: u128,
+        serial: u64,
+        base: i32,
+        sync: i32,
+    ) -> api::ReceptionMetadata {
+        let week_start = crate::decode::time::gps_week_in_s(
+            (unix_ns / 1_000_000_000) as u64,
+        );
+        api::ReceptionMetadata {
+            sensor: Some(Sensor {
+                serial,
+                ..Default::default()
+            }),
+            gnss_timestamp: (unix_ns - u128::from(week_start) * 1_000_000_000)
+                as u64,
+            timing_base: base,
+            timing_sync_source: sync,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_clock_preserves_spacing_despite_bursty_delivery() {
+        let start = now_in_ns() - 2_000_000_000;
+        let frames = [start, start + 440_000_000].map(|time| {
+            Ok(ModeSDownlinkFrame {
+                reply: vec![1, 2, 3],
+                receptions: vec![reception_at(
+                    time,
+                    42,
+                    api::TimingBase::GpsTow as i32,
+                    api::TimingSyncSource::Gnss as i32,
+                )],
+                ..Default::default()
+            })
+        });
+        let (tx, mut rx) = mpsc::channel(2);
+        forward_stream(
+            futures::stream::iter(frames),
+            HashMap::new(),
+            tx,
+            || {},
+        )
+        .await
+        .unwrap();
+        let first = rx.recv().await.unwrap();
+        let second = rx.recv().await.unwrap();
+        assert!((first.timestamp - start as f64 * 1e-9).abs() < 1e-6);
+        assert!((second.timestamp - first.timestamp - 0.44).abs() < 1e-6);
+        assert!(first.metadata[0].system_timestamp > first.timestamp + 1.0);
+        assert_eq!(first.metadata[0].serial, 42);
+        assert_eq!(first.frame, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn only_declared_synchronized_gps_clocks_are_selected() {
+        use api::{TimingBase, TimingSyncSource};
+        let capture_ns = now_in_ns() - 2_000_000_000;
+        for (base, sync, usable) in [
+            (
+                TimingBase::GpsTow as i32,
+                TimingSyncSource::Gnss as i32,
+                true,
+            ),
+            (
+                TimingBase::GpsTow as i32,
+                TimingSyncSource::AtomicClock as i32,
+                true,
+            ),
+            (
+                TimingBase::GpsTow as i32,
+                TimingSyncSource::NoSource as i32,
+                false,
+            ),
+            (
+                TimingBase::SystemTime as i32,
+                TimingSyncSource::Gnss as i32,
+                false,
+            ),
+            (
+                TimingBase::NoBase as i32,
+                TimingSyncSource::Gnss as i32,
+                false,
+            ),
+            (99, TimingSyncSource::Gnss as i32, false),
+            (TimingBase::GpsTow as i32, 99, false),
+        ] {
+            let frame = ModeSDownlinkFrame {
+                receptions: vec![reception_at(capture_ns, 42, base, sync)],
+                ..Default::default()
+            };
+            let (tx, mut rx) = mpsc::channel(1);
+            forward_stream(
+                futures::stream::iter([Ok(frame)]),
+                HashMap::new(),
+                tx,
+                || {},
+            )
+            .await
+            .unwrap();
+            let message = rx.recv().await.unwrap();
+            let metadata = &message.metadata[0];
+            assert_eq!(
+                metadata.gnss_timestamp.is_some(),
+                usable,
+                "base={base}, sync={sync}"
+            );
+            assert_eq!(metadata.nanoseconds.is_some(), usable);
+            if usable {
+                assert_eq!(message.timestamp, metadata.gnss_timestamp.unwrap());
+            } else {
+                assert_eq!(message.timestamp, metadata.system_timestamp);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn earliest_usable_reception_wins_without_rewriting_sensor_metadata()
+    {
+        use api::{TimingBase, TimingSyncSource};
+        let capture_ns = now_in_ns() - 2_000_000_000;
+        let mut malformed = reception_at(
+            capture_ns,
+            4,
+            TimingBase::GpsTow as i32,
+            TimingSyncSource::Gnss as i32,
+        );
+        malformed.gnss_timestamp = u64::MAX;
+        let frame = ModeSDownlinkFrame {
+            receptions: vec![
+                reception_at(
+                    capture_ns + 100_000_000,
+                    1,
+                    TimingBase::GpsTow as i32,
+                    TimingSyncSource::Gnss as i32,
+                ),
+                reception_at(
+                    capture_ns,
+                    2,
+                    TimingBase::GpsTow as i32,
+                    TimingSyncSource::Gnss as i32,
+                ),
+                reception_at(
+                    capture_ns - 100_000_000,
+                    3,
+                    TimingBase::SystemTime as i32,
+                    TimingSyncSource::Gnss as i32,
+                ),
+                malformed,
+            ],
+            ..Default::default()
+        };
+        let (tx, mut rx) = mpsc::channel(1);
+        forward_stream(
+            futures::stream::iter([Ok(frame)]),
+            HashMap::from([(2, "sensor-two".to_string())]),
+            tx,
+            || {},
+        )
+        .await
+        .unwrap();
+        let message = rx.recv().await.unwrap();
+        assert!((message.timestamp - capture_ns as f64 * 1e-9).abs() < 1e-6);
+        assert_eq!(message.metadata.len(), 4);
+        assert_eq!(message.metadata[1].name.as_deref(), Some("sensor-two"));
+        assert_eq!(
+            message
+                .metadata
+                .iter()
+                .map(|m| m.serial)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert!(message.metadata[2].gnss_timestamp.is_none());
+        assert!(message.metadata[3].gnss_timestamp.is_none());
+    }
+
+    #[tokio::test]
+    async fn absent_reception_identity_does_not_panic() {
+        let frame = ModeSDownlinkFrame {
+            receptions: vec![api::ReceptionMetadata::default()],
+            ..Default::default()
+        };
+        let (tx, mut rx) = mpsc::channel(1);
+        forward_stream(
+            futures::stream::iter([Ok(frame)]),
+            HashMap::new(),
+            tx,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert!(rx.recv().await.unwrap().metadata.is_empty());
+    }
 
     #[tokio::test]
     async fn connection_is_reported_before_any_frame_arrives() {
