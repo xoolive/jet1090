@@ -8,12 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use style::palette::tailwind;
 use tokio::sync::RwLockReadGuard;
 
-use crate::health::{Severity, SourceStatus};
+use crate::health::{HealthState, Severity, SourceStatus};
 use crate::snapshot::{Snapshot, StateVectors};
 use crate::{Jet1090, SharedState, SortKey};
 
 const INFO_TEXT: &str =
-    "(Esc/Q) quit | (↑/K) up | (↓/J) down | (⤒/G) top | (/) search | (E) errors";
+    "(Esc/Q) quit | (↑/K) up | (↓/J) down | (⤒/G) top | (/) search | (S) sources | (E) errors";
 
 /**
  * Rendering of the table in interactive mode
@@ -24,6 +24,13 @@ pub fn build_table(
     shared: &SharedState,
     state_vectors: &RwLockReadGuard<'_, BTreeMap<String, StateVectors>>,
 ) {
+    // Keep the summary, sources and errors consistent without holding the
+    // health mutex while rendering widgets.
+    let health = shared
+        .health
+        .lock()
+        .expect("health state lock poisoned")
+        .clone();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("SystemTime before unix epoch")
@@ -68,8 +75,16 @@ pub fn build_table(
 
     app.scroll_state = app.scroll_state.content_length(app.items.len());
 
-    let rects = Layout::vertical([Constraint::Min(5), Constraint::Length(1)])
-        .split(frame.area());
+    let rects = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(source_panel_height(
+            frame.area().height,
+            app,
+            &health,
+        )),
+        Constraint::Length(1),
+    ])
+    .split(frame.area());
     let colors = TableColors::new(&tailwind::CYAN);
 
     use crate::snapshot::StateVectors;
@@ -248,7 +263,7 @@ pub fn build_table(
         .map(|c| c.constraint())
         .collect::<Vec<Constraint>>();
 
-    let health_title = source_health_title(shared);
+    let health_title = source_health_title(&health);
     let table = Table::new(rows, constraints)
         .column_spacing(2)
         .header(
@@ -298,7 +313,11 @@ pub fn build_table(
         &mut app.scroll_state,
     );
 
-    let controls_area = rects[1];
+    if app.show_sources {
+        render_sources(frame, rects[1], &health);
+    }
+
+    let controls_area = rects[2];
     let controls = if app.is_search_mode {
         Line::from(format!(
             "Search (Esc to cancel, Enter to lock): {}",
@@ -315,12 +334,74 @@ pub fn build_table(
     );
 
     if app.show_errors {
-        render_error_overlay(frame, app, shared);
+        render_error_overlay(frame, app, &health);
     }
 }
 
-fn source_health_title(shared: &SharedState) -> Line<'static> {
-    let health = shared.health.lock().expect("health state lock poisoned");
+fn source_panel_height(
+    height: u16,
+    app: &Jet1090,
+    health: &HealthState,
+) -> u16 {
+    if !app.show_sources {
+        return 0;
+    }
+    let rows = health
+        .sources
+        .len()
+        .max(1)
+        .saturating_mul(2)
+        .saturating_add(2);
+    rows.min(usize::from(height / 2)) as u16
+}
+
+fn render_sources(frame: &mut Frame, area: Rect, health: &HealthState) {
+    let mut lines = Vec::new();
+    for (source, status) in &health.sources {
+        let (symbol, label, color) = match status {
+            SourceStatus::Healthy => ("●", "connected", tailwind::GREEN.c400),
+            SourceStatus::Connecting => {
+                ("○", "connecting", tailwind::CYAN.c400)
+            }
+            SourceStatus::Reconnecting => {
+                ("↻", "reconnecting", tailwind::YELLOW.c400)
+            }
+            SourceStatus::Failed => ("✕", "failed", tailwind::RED.c400),
+        };
+        let mut text = format!("{symbol} {source}: {label}");
+        if matches!(status, SourceStatus::Reconnecting | SourceStatus::Failed) {
+            if let Some(event) = health
+                .events
+                .iter()
+                .rev()
+                .find(|event| event.source == *source)
+            {
+                text.push_str(&format!(" — {}", event.message));
+            }
+        }
+        lines.push(Line::styled(text, Style::new().fg(color)));
+    }
+    if lines.is_empty() {
+        lines.push(Line::raw("No sources configured."));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(
+                Style::new()
+                    .fg(tailwind::SLATE.c200)
+                    .bg(tailwind::SLATE.c950),
+            )
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::bordered()
+                    .title(" Sources (S) hide ")
+                    .border_type(BorderType::Rounded),
+            ),
+        area,
+    );
+}
+
+fn source_health_title(health: &HealthState) -> Line<'static> {
     let mut healthy = 0;
     let mut connecting = 0;
     let mut reconnecting = 0;
@@ -369,9 +450,8 @@ fn source_health_title(shared: &SharedState) -> Line<'static> {
 fn render_error_overlay(
     frame: &mut Frame,
     app: &mut Jet1090,
-    shared: &SharedState,
+    health: &HealthState,
 ) {
-    let health = shared.health.lock().expect("health state lock poisoned");
     let area = centered_rect(85, 75, frame.area());
     let height = area.height.saturating_sub(2) as usize;
     let visible_events = health
@@ -380,10 +460,8 @@ fn render_error_overlay(
         .rev()
         .skip(app.error_scroll)
         .take(height)
-        .cloned()
         .collect::<Vec<_>>();
     let event_count = health.events.len();
-    drop(health);
     let events = visible_events
         .iter()
         .map(|event| {
@@ -688,6 +766,219 @@ impl Render for ColumnRender {
             ColumnRender::REFERENCE => Constraint::Length(8),
             ColumnRender::LAST => Constraint::Length(7),
             ColumnRender::FIRST => Constraint::Length(5),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::health::{self, HealthEvent};
+    use ratatui::backend::TestBackend;
+
+    fn shared_with_sources() -> SharedState {
+        let health = health::new_health();
+        for (name, status) in [
+            ("Airspy", SourceStatus::Healthy),
+            ("Local", SourceStatus::Connecting),
+            ("Remote", SourceStatus::Reconnecting),
+            ("Missing", SourceStatus::Failed),
+        ] {
+            health::set_source_status(&health, name, status);
+        }
+        for (source, message) in [
+            ("Airspy", "stale error after recovery"),
+            ("Remote", "older failure"),
+            ("Remote", "connection refused"),
+            ("Missing", "device unavailable"),
+            ("other module", "unrelated error"),
+        ] {
+            health.lock().unwrap().events.push_back(HealthEvent {
+                timestamp: Local::now(),
+                severity: Severity::Error,
+                source: source.to_string(),
+                message: message.to_string(),
+                occurrences: 1,
+            });
+        }
+        SharedState::new(BTreeMap::new(), health)
+    }
+
+    fn draw(
+        width: u16,
+        height: u16,
+        app: &mut Jet1090,
+        shared: &SharedState,
+    ) -> ratatui::buffer::Buffer {
+        app.width = width;
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).unwrap();
+        let states = shared.state_vectors.blocking_read();
+        terminal
+            .draw(|frame| build_table(frame, app, shared, &states))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer.content.iter().map(|cell| cell.symbol()).collect()
+    }
+
+    #[test]
+    fn sources_panel_is_hidden_by_default() {
+        let buffer =
+            draw(120, 30, &mut Jet1090::default(), &shared_with_sources());
+        let output = text(&buffer);
+        assert!(output.contains("(S) sources"));
+        assert!(!output.contains("Sources (S) hide"));
+        assert!(!output.contains("device unavailable"));
+    }
+
+    #[test]
+    fn sources_panel_shows_statuses_and_current_reasons() {
+        let mut app = Jet1090 {
+            show_sources: true,
+            ..Jet1090::default()
+        };
+        let buffer = draw(120, 30, &mut app, &shared_with_sources());
+        let output = text(&buffer);
+        for expected in [
+            "Sources (S) hide",
+            "Airspy",
+            "Local",
+            "Remote",
+            "Missing",
+            "connected",
+            "connecting",
+            "reconnecting",
+            "failed",
+            "connection refused",
+            "device unavailable",
+            "jet1090 (0 aircraft)",
+        ] {
+            assert!(output.contains(expected), "missing {expected}: {output}");
+        }
+        for obsolete in [
+            "older failure",
+            "stale error after recovery",
+            "unrelated error",
+        ] {
+            assert!(!output.contains(obsolete));
+        }
+        for (symbol, color) in [
+            ("●", tailwind::GREEN.c400),
+            ("○", tailwind::CYAN.c400),
+            ("↻", tailwind::YELLOW.c400),
+            ("✕", tailwind::RED.c400),
+        ] {
+            // Check the sources panel, not the existing summary in the
+            // aircraft table's bottom border (row 18).
+            assert!(buffer
+                .content
+                .iter()
+                .skip(120 * 19)
+                .take(120 * 10)
+                .any(|cell| cell.symbol() == symbol && cell.fg == color));
+        }
+    }
+
+    #[test]
+    fn recovered_sources_stop_showing_old_failure_reasons() {
+        let shared = shared_with_sources();
+        let mut app = Jet1090 {
+            show_sources: true,
+            ..Jet1090::default()
+        };
+        assert!(text(&draw(120, 30, &mut app, &shared))
+            .contains("connection refused"));
+        health::set_source_status(
+            &shared.health,
+            "Remote",
+            SourceStatus::Healthy,
+        );
+        assert!(!text(&draw(120, 30, &mut app, &shared))
+            .contains("connection refused"));
+        assert!(shared
+            .health
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .any(|event| event.message == "connection refused"));
+    }
+
+    #[test]
+    fn sources_panel_preserves_aircraft_table() {
+        let shared = shared_with_sources();
+        let cur = Snapshot {
+            icao24: "abc123".to_string(),
+            firstseen: 0,
+            lastseen: 0,
+            callsign: None,
+            registration: None,
+            typecode: None,
+            squawk: None,
+            latitude: None,
+            longitude: None,
+            altitude: None,
+            selected_altitude: None,
+            groundspeed: None,
+            vertical_rate: None,
+            track: None,
+            ias: None,
+            tas: None,
+            mach: None,
+            roll: None,
+            heading: None,
+            nacp: None,
+            count: 2,
+            metadata: Vec::new(),
+            airport: None,
+        };
+        shared.state_vectors.blocking_write().insert(
+            cur.icao24.clone(),
+            StateVectors {
+                cur,
+                hist: Vec::new(),
+            },
+        );
+        let mut app = Jet1090 {
+            show_sources: true,
+            ..Jet1090::default()
+        };
+        let output = text(&draw(120, 30, &mut app, &shared));
+        assert!(output.contains("abc123"));
+        assert!(output.contains("jet1090 (1 aircraft)"));
+        assert!(output.contains("Sources (S) hide"));
+    }
+
+    #[test]
+    fn sources_panel_handles_empty_source_registry() {
+        let shared = SharedState::new(BTreeMap::new(), health::new_health());
+        let mut app = Jet1090 {
+            show_sources: true,
+            ..Jet1090::default()
+        };
+        assert!(text(&draw(120, 24, &mut app, &shared))
+            .contains("No sources configured"));
+    }
+
+    #[test]
+    fn tiny_terminals_render_with_sources_and_errors() {
+        let shared = shared_with_sources();
+        for width in [0, 1, 2, 10, 40] {
+            for height in [0, 1, 2, 3, 5, 8] {
+                for show_sources in [false, true] {
+                    for show_errors in [false, true] {
+                        let mut app = Jet1090 {
+                            show_sources,
+                            show_errors,
+                            ..Jet1090::default()
+                        };
+                        draw(width, height, &mut app, &shared);
+                    }
+                }
+            }
         }
     }
 }

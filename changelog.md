@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Configuration compatibility
+
+- Restore legacy boolean `prevent_sleep` settings alongside named modes:
+  `true` maps to non-forcing `warn`, and `false` to `none`.
+- Keep `--prevent-sleep` optional and preserve the configured mode when the
+  CLI flag is omitted. Test normal invocation without arguments, not only help.
+- Report default configuration read/parse failures with their path instead of
+  panicking and dumping the full TOML, which may contain credentials.
+- Cover legacy boolean/named sleep settings and optional CLI arguments with
+  inline regression tests.
+
+### SeRo source health
+
+- Give unnamed SeRo subscriptions recognizable opaque labels instead of the
+  aggregate `source-0000000000000000`, without changing individual sensor IDs
+  or displaying access tokens. Respect explicit source aliases.
+- Mark the feed connected after its authenticated stream and sensor metadata
+  are ready, even before receiving frames. Associate setup/stream failures and
+  unexpected EOF with that source instead of leaving it permanently connecting.
+- Preserve the library's existing `receiver` API; add a connection callback,
+  propagate gRPC stream errors and stop when the consumer closes. Report
+  disabled SeRo support without dumping credentials; keep shutdown silent.
+
+### Interactive sources
+
+- Add an `s`/`S` sources panel alongside the aircraft table, showing existing
+  source names, color-coded connection states and recent failure reasons.
+  Preserve search input and the error overlay; hide stale failure reasons
+  after recovery without deleting retained diagnostics.
+- Use a consistent health snapshot outside its mutex when rendering the
+  summary, sources and error history. Cap the sources panel at half the screen.
+- Avoid arithmetic overflow when navigating the aircraft table before any
+  aircraft have been received.
+
 ### DF11 decoding
 
 - Export a typed `interrogator` in DF11 all-call replies. Keep the raw

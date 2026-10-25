@@ -20,11 +20,11 @@ use tonic::{
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
     Streaming,
 };
-use tracing::{error, info};
+use tracing::info;
 
-use crate::decode::time::now_in_ns;
-use crate::decode::time::since_gps_week_to_since_today;
-use crate::decode::time::since_gps_week_to_unix_s;
+use crate::decode::time::{
+    now_in_ns, since_gps_week_to_since_today, since_gps_week_to_unix_s,
+};
 use crate::prelude::*;
 #[cfg(feature = "ssh")]
 use crate::source::ssh::TunnelledSero;
@@ -52,45 +52,69 @@ pub async fn receiver(
     sero: SeroClient,
     tx: mpsc::Sender<TimedMessage>,
 ) -> Result<()> {
-    let mut stream = sero.rawstream().await?;
-    let tx_copy = tx.clone();
+    receiver_with_connected_callback(sero, tx, || {}).await
+}
+
+/// Receive SeRo frames and notify the caller once the authenticated stream and
+/// sensor metadata are ready, even if no frames have arrived yet.
+pub async fn receiver_with_connected_callback<F: FnOnce()>(
+    sero: SeroClient,
+    tx: mpsc::Sender<TimedMessage>,
+    on_connected: F,
+) -> Result<()> {
+    let stream = sero.rawstream().await?;
     let info = &sero.info().await?;
     let sensor_map: HashMap<u64, String> = info
         .sensor_info
         .iter()
         .map(|elt| (elt.sensor.unwrap().serial, elt.alias.to_string()))
         .collect();
-    while let Some(response) = stream.next().await {
-        if let Ok(msg) = response {
-            let bytes = msg.reply.as_slice();
-            let system_timestamp = now_in_ns() as f64 * 1e-9;
-            let metadata = msg
-                .receptions
-                .into_iter()
-                .map(|rm| SensorMetadata {
-                    system_timestamp,
-                    gnss_timestamp: Some(since_gps_week_to_unix_s(
-                        rm.gnss_timestamp,
-                    )),
-                    nanoseconds: Some(since_gps_week_to_since_today(
-                        rm.gnss_timestamp,
-                    )),
-                    rssi: Some(rm.signal_level),
-                    serial: rm.sensor.unwrap().serial,
-                    name: sensor_map.get(&rm.sensor.unwrap().serial).cloned(),
-                })
-                .collect();
+    forward_stream(stream, sensor_map, tx, on_connected).await
+}
 
-            let tmsg = TimedMessage {
-                timestamp: system_timestamp,
-                frame: bytes.to_vec(),
-                message: None,
-                metadata,
-                decode_time: None,
-            };
-            if let Err(e) = tx_copy.send(tmsg).await {
-                error!("{}", e.to_string());
-            }
+async fn forward_stream<S, F>(
+    mut stream: S,
+    sensor_map: HashMap<u64, String>,
+    tx: mpsc::Sender<TimedMessage>,
+    on_connected: F,
+) -> Result<()>
+where
+    S: futures::Stream<
+            Item = std::result::Result<ModeSDownlinkFrame, tonic::Status>,
+        > + Unpin,
+    F: FnOnce(),
+{
+    on_connected();
+    while let Some(response) = stream.next().await {
+        let msg = response?;
+        let bytes = msg.reply.as_slice();
+        let system_timestamp = now_in_ns() as f64 * 1e-9;
+        let metadata = msg
+            .receptions
+            .into_iter()
+            .map(|rm| SensorMetadata {
+                system_timestamp,
+                gnss_timestamp: Some(since_gps_week_to_unix_s(
+                    rm.gnss_timestamp,
+                )),
+                nanoseconds: Some(since_gps_week_to_since_today(
+                    rm.gnss_timestamp,
+                )),
+                rssi: Some(rm.signal_level),
+                serial: rm.sensor.unwrap().serial,
+                name: sensor_map.get(&rm.sensor.unwrap().serial).cloned(),
+            })
+            .collect();
+
+        let tmsg = TimedMessage {
+            timestamp: system_timestamp,
+            frame: bytes.to_vec(),
+            message: None,
+            metadata,
+            decode_time: None,
+        };
+        if tx.send(tmsg).await.is_err() {
+            return Ok(());
         }
     }
     Ok(())
@@ -187,5 +211,85 @@ impl SeroClient {
             .get_mode_s_downlink_frames(request)
             .await?
             .into_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn connection_is_reported_before_any_frame_arrives() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(forward_stream(
+            futures::stream::pending(),
+            HashMap::new(),
+            tx,
+            move || {
+                let _ = ready_tx.send(());
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(1), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!task.is_finished());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn stream_errors_are_propagated_instead_of_silently_ignored() {
+        let (tx, _rx) = mpsc::channel(1);
+        let error = forward_stream(
+            futures::stream::iter([Err(tonic::Status::unavailable(
+                "connection lost",
+            ))]),
+            HashMap::new(),
+            tx,
+            || {},
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("connection lost"));
+    }
+
+    #[tokio::test]
+    async fn forwards_frames_after_reporting_connection() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let frame = ModeSDownlinkFrame {
+            reply: vec![1, 2, 3],
+            ..Default::default()
+        };
+        let mut connected = false;
+        forward_stream(
+            futures::stream::iter([Ok(frame)]),
+            HashMap::new(),
+            tx,
+            || {
+                connected = true;
+            },
+        )
+        .await
+        .unwrap();
+        assert!(connected);
+        assert_eq!(rx.recv().await.unwrap().frame, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn closed_consumer_stops_an_otherwise_live_stream() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let stream = futures::stream::iter([Ok(ModeSDownlinkFrame::default())])
+            .chain(futures::stream::pending());
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            forward_stream(stream, HashMap::new(), tx, || {}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     }
 }

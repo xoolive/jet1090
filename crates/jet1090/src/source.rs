@@ -48,7 +48,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 #[cfg(feature = "sdr")]
 use tokio::time::{sleep, Duration};
-use tracing::{error, warn};
+use tracing::error;
+#[cfg(any(
+    feature = "rtlsdr",
+    feature = "airspy",
+    feature = "hackrf",
+    feature = "soapy"
+))]
+use tracing::warn;
 use url::Url;
 
 use crate::health::{self, SharedHealth, SourceStatus};
@@ -695,6 +702,19 @@ impl FromStr for Source {
 }
 
 impl Source {
+    /// Label the feed independently of the individual sensors it contains.
+    pub fn health_label(&self) -> String {
+        self.name.clone().unwrap_or_else(|| match &self.address {
+            Address::Sero(params) => {
+                // Distinguish subscriptions without exposing tokens in the UI.
+                let mut hasher = DefaultHasher::new();
+                params.hash(&mut hasher);
+                format!("SeRo-{:016x}", hasher.finish())
+            }
+            _ => format!("source-{:016x}", self.serial()),
+        })
+    }
+
     pub fn serial(&self) -> u64 {
         match &self.address {
             Address::Tcp(address) => {
@@ -777,9 +797,7 @@ impl Source {
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
         health: SharedHealth,
     ) -> tokio::task::JoinHandle<()> {
-        let source_label = name
-            .clone()
-            .unwrap_or_else(|| format!("source-{serial:016x}"));
+        let source_label = self.health_label();
         match &self.address {
             #[cfg(feature = "rtlsdr")]
             Address::Rtlsdr(path) => {
@@ -1043,25 +1061,36 @@ impl Source {
             Address::Sero(sero) => {
                 #[cfg(not(feature = "sero"))]
                 {
-                    error!(
-                        "Compile jet1090 with the sero feature, {:?} argument ignored",
-                        sero
+                    let _ = sero;
+                    health::set_source_status(
+                        &health,
+                        &source_label,
+                        SourceStatus::Failed,
                     );
+                    error!(source = source_label, "SeRo support is not enabled; compile jet1090 with the sero feature");
                     // Return a dummy task that completes immediately
                     tokio::spawn(async move {})
                 }
                 #[cfg(feature = "sero")]
                 {
                     let client = sero::SeroClient::from(sero);
+                    let connected_health = health.clone();
+                    let connected_label = source_label.clone();
+                    let output = tx.clone();
                     tokio::spawn(async move {
                         tokio::select! {
-                            result = sero::receiver(client, tx) => {
-                                if let Err(e) = result {
-                                    error!("{}", e.to_string());
+                            biased;
+                            _ = shutdown_rx.recv() => {}
+                            result = sero::receiver_with_connected_callback(client, tx, move || {
+                                health::set_source_status(&connected_health, &connected_label, SourceStatus::Healthy);
+                            }) => {
+                                if !output.is_closed() {
+                                    health::set_source_status(&health, &source_label, SourceStatus::Failed);
+                                    match result {
+                                        Err(error) => error!(source = source_label, error = %error, "SeRo receiver stopped"),
+                                        Ok(()) => error!(source = source_label, "SeRo stream ended unexpectedly"),
+                                    }
                                 }
-                            }
-                            _ = shutdown_rx.recv() => {
-                                // Silent shutdown
                             }
                         }
                     })
@@ -1169,7 +1198,7 @@ impl Source {
 
 /// An intermediate structure defined so that you can keep your Sero entries in
 /// your configuration file even if the sero feature is not activated
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
 pub struct SeroParams {
     /// The access token
     pub token: String,
@@ -1200,6 +1229,48 @@ impl From<&SeroParams> for sero::SeroClient {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn sero_health_labels_are_recognizable_and_do_not_change_sensor_ids() {
+        let mut first: Source =
+            toml::from_str("sero.token = 'first-private-token'").unwrap();
+        let second: Source =
+            toml::from_str("sero.token = 'second-private-token'").unwrap();
+        assert!(first.health_label().starts_with("SeRo-"));
+        assert!(!first.health_label().contains("first-private-token"));
+        assert_ne!(first.health_label(), second.health_label());
+        assert_eq!(first.serial(), 0);
+        first.name = Some("Named subscription".to_string());
+        assert_eq!(first.health_label(), "Named subscription");
+    }
+
+    #[cfg(not(feature = "sero"))]
+    #[tokio::test]
+    async fn disabled_sero_is_failed_and_does_not_log_credentials() {
+        use tracing_subscriber::prelude::*;
+
+        let source: Source =
+            toml::from_str("sero.token = 'private-token-do-not-log'").unwrap();
+        let label = source.health_label();
+        let health = health::new_health();
+        health::register_source(&health, label.clone());
+        let subscriber = tracing_subscriber::registry()
+            .with(health::UiEventLayer::new(health.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        source
+            .receiver(tx, source.serial(), None, shutdown_rx, health.clone())
+            .await
+            .unwrap();
+        let health = health.lock().unwrap();
+        assert_eq!(health.sources[&label], SourceStatus::Failed);
+        assert_eq!(health.events.len(), 1);
+        assert_eq!(health.events[0].source, label);
+        assert!(!health.events[0]
+            .message
+            .contains("private-token-do-not-log"));
+    }
 
     #[test]
     fn test_source() {

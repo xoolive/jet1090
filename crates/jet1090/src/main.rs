@@ -44,12 +44,31 @@ use tracing::{error, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, ValueEnum)]
-#[serde(rename_all = "lowercase")]
+#[serde(try_from = "PreventSleepInput")]
 enum PreventSleep {
     #[default]
     None,
     Warn,
     Force,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PreventSleepInput {
+    Legacy(bool),
+    Mode(String),
+}
+
+impl TryFrom<PreventSleepInput> for PreventSleep {
+    type Error = String;
+
+    fn try_from(value: PreventSleepInput) -> Result<Self, Self::Error> {
+        match value {
+            PreventSleepInput::Legacy(true) => Ok(Self::Warn),
+            PreventSleepInput::Legacy(false) => Ok(Self::None),
+            PreventSleepInput::Mode(mode) => Self::from_str(&mode, false),
+        }
+    }
 }
 
 #[derive(Default, Deserialize, Parser)]
@@ -119,7 +138,7 @@ struct Options {
     aircraft_filter: Option<Vec<ICAO>>,
 
     /// Prevent the computer sleeping: none, warn about macOS pmset, or force it
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value = "none")]
     #[serde(default)]
     prevent_sleep: PreventSleep,
 
@@ -285,8 +304,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cfg_path.push("config.toml");
 
     if cfg_path.exists() {
-        let string = fs::read_to_string(cfg_path).await.ok().unwrap();
-        options = toml::from_str(&string).unwrap();
+        let string = fs::read_to_string(&cfg_path).await.map_err(|error| {
+            format!(
+                "Failed to read configuration file '{}': {error}",
+                cfg_path.display()
+            )
+        })?;
+        options = toml::from_str(&string).map_err(|error| {
+            format!(
+                "Failed to parse configuration file '{}': {error}",
+                cfg_path.display()
+            )
+        })?;
     }
 
     if let Ok(config_file) = std::env::var("JET1090_CONFIG") {
@@ -494,7 +523,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut references = BTreeMap::<u64, Option<Position>>::new();
     let mut sensors = BTreeMap::<u64, Sensor>::new();
     for source in options.sources.iter() {
-        let source_label = source.name.as_deref().unwrap_or("unnamed source");
+        let source_label = source.health_label();
         tracing::info!(source = source_label, "Discovering sensor metadata");
         match tokio::time::timeout(
             SENSOR_DISCOVERY_TIMEOUT,
@@ -532,12 +561,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_exp = shared.clone();
     let mut quit_rx = shared_dec.quit_tx.subscribe();
     for source in &options.sources {
-        let serial = source.serial();
-        let source_label = source
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("source-{serial:016x}"));
-        health::register_source(&health, source_label);
+        health::register_source(&health, source.health_label());
     }
 
     // Do not enter the alternate screen until source discovery is complete:
@@ -627,6 +651,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         search_query: "".to_string(),
         interactive_expire: options.interactive_expire.unwrap_or(30),
         flags: options.flags,
+        show_sources: false,
         show_errors: false,
         error_scroll: 0,
     }));
@@ -658,7 +683,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 if let Err(error) =
-                    update(&mut app_tui_task.lock().await, event, &shared_tui)
+                    update(&mut *app_tui_task.lock().await, event, &shared_tui)
                 {
                     error!(error = %error, "Interactive update failed");
                     shared_tui.request_quit();
@@ -721,9 +746,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let serial = source.serial();
         let tx_copy = tx.clone();
         let source_name = source.name.clone();
-        let source_label = source_name
-            .clone()
-            .unwrap_or_else(|| format!("source-{serial:016x}"));
+        let source_label = source.health_label();
         health::register_source(&health, source_label.clone());
         let shutdown_rx = shutdown_tx.subscribe();
         let handle = source.receiver(
@@ -952,6 +975,7 @@ pub struct Jet1090 {
     search_query: String,
     interactive_expire: u64,
     flags: bool,
+    show_sources: bool,
     show_errors: bool,
     error_scroll: usize,
 }
@@ -1013,7 +1037,7 @@ pub enum SortKey {
 }
 
 fn update(
-    jet1090: &mut tokio::sync::MutexGuard<Jet1090>,
+    jet1090: &mut Jet1090,
     event: Event,
     shared: &SharedState,
 ) -> std::io::Result<()> {
@@ -1044,6 +1068,9 @@ fn update(
                 (false, Char('l')) => jet1090.sort_key = SortKey::LAST,
                 (false, Char('-')) => jet1090.sort_asc = !jet1090.sort_asc,
                 (false, Char('/')) => jet1090.is_search_mode = true,
+                (false, Char('s')) | (false, Char('S')) => {
+                    jet1090.show_sources = !jet1090.show_sources;
+                }
                 (false, Char('e')) => {
                     jet1090.show_errors = !jet1090.show_errors;
                     if jet1090.show_errors {
@@ -1079,7 +1106,7 @@ impl Jet1090 {
     pub fn next(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
-                if i >= self.items.len() - 1 {
+                if i >= self.items.len().saturating_sub(1) {
                     0
                 } else {
                     i + 1
@@ -1095,7 +1122,7 @@ impl Jet1090 {
         let i = match self.state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.items.len() - 1
+                    self.items.len().saturating_sub(1)
                 } else {
                     i - 1
                 }
@@ -1143,7 +1170,129 @@ async fn publish_with_retry(
 #[cfg(test)]
 mod tests {
 
-    use crate::Options;
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    fn press(app: &mut Jet1090, shared: &SharedState, key: KeyCode) {
+        update(
+            app,
+            Event::Key(KeyEvent::new(key, KeyModifiers::NONE)),
+            shared,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn sources_toggle_without_acknowledging_errors() {
+        let shared = SharedState::new(BTreeMap::new(), health::new_health());
+        shared.health.lock().unwrap().unread_errors = 2;
+        let mut app = Jet1090::default();
+        assert!(!app.show_sources);
+        press(&mut app, &shared, KeyCode::Char('s'));
+        assert!(app.show_sources);
+        assert_eq!(shared.health.lock().unwrap().unread_errors, 2);
+        press(&mut app, &shared, KeyCode::Char('e'));
+        assert!(app.show_errors);
+        assert!(app.show_sources);
+        press(&mut app, &shared, KeyCode::Esc);
+        assert!(!app.show_errors);
+        assert!(app.show_sources);
+        assert!(!shared.should_quit.load(Ordering::Relaxed));
+        press(&mut app, &shared, KeyCode::Char('S'));
+        assert!(!app.show_sources);
+    }
+
+    #[test]
+    fn search_treats_sources_keys_as_text() {
+        let shared = SharedState::new(BTreeMap::new(), health::new_health());
+        let mut app = Jet1090::default();
+        for key in ['/', 's', 'S'] {
+            press(&mut app, &shared, KeyCode::Char(key));
+        }
+        assert!(app.is_search_mode);
+        assert_eq!(app.search_query, "sS");
+        assert!(!app.show_sources);
+        press(&mut app, &shared, KeyCode::Enter);
+        press(&mut app, &shared, KeyCode::Char('S'));
+        assert!(app.show_sources);
+        assert_eq!(app.search_query, "sS");
+    }
+
+    #[test]
+    fn sources_can_be_opened_and_navigated_without_aircraft() {
+        let shared = SharedState::new(BTreeMap::new(), health::new_health());
+        let mut app = Jet1090::default();
+        app.state.select(Some(0));
+        press(&mut app, &shared, KeyCode::Char('s'));
+        for key in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Home,
+        ] {
+            press(&mut app, &shared, key);
+        }
+        assert!(app.show_sources);
+        assert!(!shared.should_quit.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn sleep_flag_is_optional_and_explicit_modes_still_work() {
+        let options = Options::try_parse_from(["jet1090"]).unwrap();
+        assert!(matches!(options.prevent_sleep, PreventSleep::None));
+        for mode in ["none", "warn", "force"] {
+            let options =
+                Options::try_parse_from(["jet1090", "--prevent-sleep", mode])
+                    .unwrap();
+            assert_eq!(
+                options
+                    .prevent_sleep
+                    .to_possible_value()
+                    .unwrap()
+                    .get_name(),
+                mode
+            );
+        }
+        assert!(Options::try_parse_from([
+            "jet1090",
+            "--prevent-sleep",
+            "invalid"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn legacy_sleep_booleans_and_string_modes_load() {
+        for (value, expected) in [
+            ("true", "warn"),
+            ("false", "none"),
+            ("\"none\"", "none"),
+            ("\"warn\"", "warn"),
+            ("\"force\"", "force"),
+        ] {
+            let options: Options =
+                toml::from_str(&format!("prevent_sleep = {value}")).unwrap();
+            assert_eq!(
+                options
+                    .prevent_sleep
+                    .to_possible_value()
+                    .unwrap()
+                    .get_name(),
+                expected
+            );
+        }
+        assert!(matches!(
+            toml::from_str::<Options>("").unwrap().prevent_sleep,
+            PreventSleep::None
+        ));
+        for value in ["42", "\"invalid\"", "[]"] {
+            assert!(toml::from_str::<Options>(&format!(
+                "prevent_sleep = {value}"
+            ))
+            .is_err());
+        }
+    }
 
     #[test]
     fn test_config() {

@@ -41,6 +41,12 @@ update_position = false    # auto-update the reference position (useful when on 
 verbose = false            # display decoded messages in the terminal
 ```
 
+Legacy `prevent_sleep = true` and `false` remain supported: `true` maps to
+`"warn"` (prevent sleep and warn about macOS power settings, without forcing
+changes), and `false` maps to `"none"`. Use `"force"` explicitly to request
+changes to macOS power settings. The `--prevent-sleep` CLI option is optional;
+omitting it preserves the configured mode.
+
 ## Sources
 
 ### RTL-SDR

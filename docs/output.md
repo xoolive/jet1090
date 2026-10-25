@@ -9,6 +9,23 @@
 
 Both options are incompatible and `--interactive` has the priority.
 
+Press `s` or `S` to show or hide the **Sources** panel below the aircraft table.
+It uses the existing source names (stable identifiers for unnamed sources) and
+shows their current state: `●` connected, `○` connecting, `↻` reconnecting or
+`✕` failed. Reconnecting/failed sources also show their most recent retained
+diagnostic; it is no longer displayed there after recovery. The panel takes
+at most half the terminal height, keeping the aircraft table visible.
+
+A SeRo entry represents a subscription containing multiple sensors. Without
+an explicit `name`, it uses an opaque `SeRo-…` subscription label, not a sensor
+serial number. It becomes connected once the authenticated stream and sensor
+metadata are ready, even while idle; failures are attributed to that entry.
+Individual sensor identifiers in decoded messages are unchanged.
+
+The `e` key opens the retained warning/error history; `Esc` closes it. Showing
+sources does not acknowledge unread errors. While entering a `/` search, `s`
+and `S` remain search text rather than toggling the panel.
+
 In the table view, aircraft can be sorted by:
 
 | key |                                         |

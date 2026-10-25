@@ -41,7 +41,7 @@ pub struct HealthEvent {
     pub occurrences: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct HealthState {
     pub sources: BTreeMap<String, SourceStatus>,
     pub events: VecDeque<HealthEvent>,
