@@ -39,25 +39,27 @@ pub async fn deduplicate_messages(
         let timestamp_ms = (msg.timestamp * 1e3) as u128;
         let frame = msg.frame.clone();
 
-        // Add message to cache
-        cache.entry(frame.clone()).or_default().push(msg);
-
-        // Push the expiration timestamp into the heap
-        if cache[&frame].len() == 1 {
-            expiration_heap.push(Reverse((
-                timestamp_ms + dedup_threshold as u128,
-                frame.clone(),
-            )));
-        }
-
-        // Check and handle expired entries
-        // Use peek() to avoid pop-push cycle that breaks with backwards timestamps
-        while let Some(Reverse((next_expiration, _))) = expiration_heap.peek() {
-            let next_expiration = *next_expiration;
-
-            // If not expired yet, stop processing
-            if next_expiration > timestamp_ms {
-                break;
+        let mut pending = Some(msg);
+        // Expire existing groups before inserting this reception: identical
+        // payloads outside the window belong to separate transmissions.
+        loop {
+            let expired = expiration_heap.peek().is_some_and(
+                |Reverse((expiration, _))| *expiration <= timestamp_ms,
+            );
+            if !expired {
+                let Some(msg) = pending.take() else {
+                    break;
+                };
+                cache.entry(frame.clone()).or_default().push(msg);
+                if cache[&frame].len() == 1 {
+                    expiration_heap.push(Reverse((
+                        timestamp_ms + u128::from(dedup_threshold),
+                        frame.clone(),
+                    )));
+                }
+                // Recheck after insertion so a zero threshold still emits
+                // immediately, including when no further packet arrives.
+                continue;
             }
 
             // Pop the expired entry and process it
@@ -150,6 +152,76 @@ pub async fn deduplicate_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reception(timestamp: f64, serial: u64) -> TimedMessage {
+        TimedMessage {
+            timestamp,
+            frame: hex::decode("8d40621d58c382d690c8ac2863a7").unwrap(),
+            message: None,
+            metadata: vec![SensorMetadata {
+                system_timestamp: timestamp + 0.01,
+                gnss_timestamp: Some(timestamp),
+                nanoseconds: None,
+                rssi: None,
+                serial,
+                name: None,
+            }],
+            decode_time: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn identical_payloads_respect_dedup_expiry_boundary() {
+        for (gap_ms, expected_groups) in [(250, 1), (450, 2), (1000, 2)] {
+            let (tx_in, rx_in) = mpsc::channel(3);
+            let (tx_out, mut rx_out) = mpsc::channel(3);
+            let task =
+                tokio::spawn(deduplicate_messages(rx_in, tx_out, 450, 0));
+            let second_timestamp = (1_000_000 + gap_ms) as f64 / 1000.;
+            tx_in.send(reception(1000., 1)).await.unwrap();
+            tx_in.send(reception(second_timestamp, 2)).await.unwrap();
+            // Advance event time to expire the second group. Pending cache
+            // draining at EOF is a separate issue, not part of this test.
+            let mut sentinel = reception(1002., 3);
+            sentinel.frame = vec![0; 14];
+            tx_in.send(sentinel).await.unwrap();
+            drop(tx_in);
+            task.await.unwrap();
+            let mut groups = Vec::new();
+            while let Some(msg) = rx_out.recv().await {
+                groups.push(msg);
+            }
+            assert_eq!(groups.len(), expected_groups, "gap={gap_ms}ms");
+            assert_eq!(groups[0].timestamp, 1000.);
+            if expected_groups == 1 {
+                assert_eq!(groups[0].metadata.len(), 2);
+            } else {
+                assert_eq!(groups[1].timestamp, second_timestamp);
+                assert_eq!(groups[0].metadata[0].serial, 1);
+                assert_eq!(groups[1].metadata[0].serial, 2);
+                assert_eq!(groups[0].metadata.len(), 1);
+                assert_eq!(groups[1].metadata.len(), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_dedup_threshold_emits_without_another_packet() {
+        let (tx_in, rx_in) = mpsc::channel(1);
+        let (tx_out, mut rx_out) = mpsc::channel(1);
+        let task = tokio::spawn(deduplicate_messages(rx_in, tx_out, 0, 0));
+        tx_in.send(reception(1000., 1)).await.unwrap();
+        let message = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx_out.recv(),
+        )
+        .await
+        .expect("zero threshold must not wait for another input")
+        .unwrap();
+        assert_eq!(message.timestamp, 1000.);
+        drop(tx_in);
+        task.await.unwrap();
+    }
 
     #[tokio::test]
     async fn late_packet_does_not_underflow_reordering_age() {

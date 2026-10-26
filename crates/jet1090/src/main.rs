@@ -3,6 +3,7 @@
 mod dedup;
 mod filters;
 mod health;
+mod redis;
 mod sensor;
 mod shell;
 mod snapshot;
@@ -20,7 +21,6 @@ use clap::{Command, CommandFactory, Parser, ValueEnum, ValueHint};
 use clap_complete::{generate, Generator};
 use crossterm::event::KeyCode;
 use ratatui::widgets::*;
-use redis::AsyncCommands;
 use rs1090::data::aircraft;
 use rs1090::decode::commb::MessageProcessor;
 use rs1090::decode::cpr::{
@@ -207,7 +207,7 @@ struct Options {
     #[arg(long, value_name = "REDIS TOPIC")]
     redis_topic: Option<String>,
 
-    /// Retry interval (seconds) when publishing to Redis fails (0 disables retry)
+    /// Redis retry interval in seconds (0 skips failed batches with a warning)
     #[arg(long, value_name = "SECONDS")]
     #[serde(default)]
     redis_retry_interval: Option<u64>,
@@ -451,33 +451,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    const REDIS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-    let mut redis_connect = match options.redis_url {
+    let redis_connection = match options.redis_url {
         Some(url) => {
-            let client = redis::Client::open(url.clone()).map_err(|error| {
-                format!("Invalid Redis URL '{url}': {error}")
-            })?;
+            let client = ::redis::Client::open(url)
+                .map_err(|error| format!("Invalid Redis URL: {error}"))?;
             let connection = tokio::time::timeout(
-                REDIS_CONNECT_TIMEOUT,
+                redis::CONNECT_TIMEOUT,
                 client.get_multiplexed_async_connection(),
             )
             .await
             .map_err(|_| {
                 format!(
-                    "Timed out after {} seconds connecting to Redis at '{url}'",
-                    REDIS_CONNECT_TIMEOUT.as_secs()
+                    "Timed out after {} seconds connecting to Redis",
+                    redis::CONNECT_TIMEOUT.as_secs()
                 )
             })?
-            .map_err(|error| {
-                format!("Failed to connect to Redis at '{url}': {error}")
-            })?;
-            Some(connection)
+            .map_err(|error| format!("Failed to connect to Redis: {error}"))?;
+            Some((client, connection))
         }
         None => None,
     };
     let redis_topic = options.redis_topic.unwrap_or("jet1090".to_string());
     let redis_retry_interval =
         Duration::from_secs(options.redis_retry_interval.unwrap_or(5));
+    let mut redis_batch = redis_connection.map(|(client, connection)| {
+        redis::Batch::new(client, connection, redis_topic, redis_retry_interval)
+    });
 
     let filters = filters::Filters {
         df_filter: options
@@ -801,14 +800,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut last_reference_update: f64 = 0.0;
     let mut first_msg = true;
+    let mut output_failure = None;
 
     loop {
         if *quit_rx.borrow() {
             break;
         }
 
+        let batch_ready = async {
+            match redis_batch.as_ref() {
+                Some(batch) => batch.ready().await,
+                None => std::future::pending().await,
+            }
+        };
         let maybe_msg = tokio::select! {
+            biased;
             _ = quit_rx.changed() => None,
+            _ = batch_ready => {
+                if !redis_batch.as_mut().expect("Redis batch ready")
+                    .flush_or_quit(&mut quit_rx).await {
+                    break;
+                }
+                continue;
+            },
             maybe_msg = rx_dedup.recv() => maybe_msg,
         };
 
@@ -867,21 +881,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if let Some(f) = &mut file {
-                    f.write_line(&json).await?;
+                    if let Err(error) = f.write_line(&json).await {
+                        error!(%error, "File output failed");
+                        output_failure = Some(error);
+                        shared_dec.request_quit();
+                        break;
+                    }
                 }
 
-                if let Some(c) = &mut redis_connect {
-                    publish_with_retry(
-                        c,
-                        redis_topic.as_str(),
-                        &json,
-                        redis_retry_interval,
-                    )
-                    .await;
+                let json = Arc::new(json);
+                if let Some(batch) = &mut redis_batch {
+                    if batch.needs_flush_before(&json)
+                        && !batch.flush_or_quit(&mut quit_rx).await
+                    {
+                        warn!("Redis flush interrupted; current message was not added to the batch");
+                        break;
+                    }
+                    batch.push(json.clone());
                 }
 
-                // Fails only when nobody is subscribed to /stream
-                let _ = shared_dec.stream_tx.send(Arc::new(json));
+                // Redis ACKs are awaited once per batch, not for each message.
+                let _ = shared_dec.stream_tx.send(json);
             }
         }
 
@@ -899,11 +919,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let output_result = if let Some(file) = &mut file {
+    let finished_file = if let Some(file) = &mut file {
         file.finish().await
     } else {
         Ok(())
     };
+    let output_result = match output_failure {
+        Some(error) => Err(error),
+        None => finished_file,
+    };
+
+    let redis_result = match redis_batch {
+        Some(batch) => batch.finish().await,
+        None => Ok(()),
+    };
+    if let Err(error) = &redis_result {
+        warn!(%error, "Redis output did not finish cleanly");
+    }
 
     // Signal all source tasks and the TUI to shut down.
     shared_dec.request_quit();
@@ -922,11 +954,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         health::print_report(&health);
     }
 
-    output_result?;
     #[cfg(target_os = "macos")]
     if macos_sleep_changed {
         restore_macos_sleep_setting().await;
     }
+    output_result?;
+    redis_result?;
     Ok(())
 }
 
@@ -1140,31 +1173,6 @@ impl Jet1090 {
 
 fn print_completions<G: Generator>(gen: G, cmd: &mut Command) {
     generate(gen, cmd, cmd.get_name().to_string(), &mut io::stdout());
-}
-
-async fn publish_with_retry(
-    connection: &mut redis::aio::MultiplexedConnection,
-    topic: &str,
-    payload: &str,
-    retry_interval: Duration,
-) {
-    loop {
-        match connection.publish::<_, _, ()>(topic, payload).await {
-            Ok(()) => break,
-            Err(err) => {
-                if retry_interval.is_zero() {
-                    warn!(error = %err, "Redis publish failed; retries disabled");
-                    break;
-                }
-                warn!(
-                    error = %err,
-                    retry_seconds = retry_interval.as_secs(),
-                    "Redis publish failed; retrying"
-                );
-                sleep(retry_interval).await;
-            }
-        }
-    }
 }
 
 #[cfg(test)]

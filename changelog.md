@@ -24,6 +24,25 @@
 - Guard unsigned reorder-age subtraction for late packets without changing
   actual timestamps, window defaults, CPR limits, Beast or native SDR timing.
 
+### Message deduplication
+
+- Expire cached groups before adding a new reception, so identical payloads
+  at or beyond the deduplication window remain separate transmissions.
+  Preserve original timestamps and immediate zero-threshold emission.
+
+### Redis publication
+
+- Batch unchanged JSON in the main loop, pipelining up to 16 messages or 64 KiB
+  of payloads with a 5 ms first-message collection deadline. Keep normal message
+  order and backpressure without an additional output task or queue.
+- Reconnect after publication failures and warn before retrying uncertain
+  batches, whose already-delivered prefix may repeat. A zero retry interval
+  skips failed batches with a warning; Pub/Sub is not exactly-once delivery.
+- Flush low-rate batches even without more input, allow quit to interrupt
+  publication/retries, and bound final flushing to two seconds with unresolved
+  counts. Warn when a cancelled query may be replayed during the final flush.
+  Redis startup errors no longer echo connection URLs or credentials.
+
 ### SeRo source health
 
 - Give unnamed SeRo subscriptions recognizable opaque labels instead of the
