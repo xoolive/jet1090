@@ -248,3 +248,9 @@ This preserves measurement spacing when streamed frames arrive in bursts.
 Uptime, unknown/unsynchronized timing and out-of-range clock values fall back
 to client observation time; they are not converted into absolute GNSS times.
 No additional configuration is required. Other sources' timing is unchanged.
+
+!!! tip
+
+    When mixing several such feeds, receptions of the same transmission are
+    merged by the [deduplication](deduplication.md) stage, which also decides
+    which capture time is kept for the merged message.

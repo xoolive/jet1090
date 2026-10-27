@@ -796,6 +796,7 @@ impl Source {
         name: Option<String>,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
         health: SharedHealth,
+        clock_grids: crate::dedup::ClockGrids,
     ) -> tokio::task::JoinHandle<()> {
         let source_label = self.health_label();
         match &self.address {
@@ -1173,13 +1174,15 @@ impl Source {
                 let status_label = source_label.clone();
                 tokio::spawn(async move {
                     tokio::select! {
-                        result = beast::receiver(server_address, tx, serial, name, move |status| {
+                        result = beast::receiver_with_timing_callback(server_address, tx, serial, name, move |status| {
                             let status = match status {
                                 beast::ConnectionStatus::Connecting => SourceStatus::Connecting,
                                 beast::ConnectionStatus::Healthy => SourceStatus::Healthy,
                                 beast::ConnectionStatus::Reconnecting => SourceStatus::Reconnecting,
                             };
                             health::set_source_status(&status_health, &status_label, status);
+                        }, move |confirmed| {
+                            clock_grids.lock().unwrap_or_else(|e| e.into_inner()).insert(serial, confirmed);
                         }) => {
                             if let Err(e) = result {
                                 health::set_source_status(&source_health, &source_label, SourceStatus::Failed);
@@ -1260,7 +1263,14 @@ mod test {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let (_shutdown, shutdown_rx) = tokio::sync::broadcast::channel(1);
         source
-            .receiver(tx, source.serial(), None, shutdown_rx, health.clone())
+            .receiver(
+                tx,
+                source.serial(),
+                None,
+                shutdown_rx,
+                health.clone(),
+                Default::default(),
+            )
             .await
             .unwrap();
         let health = health.lock().unwrap();

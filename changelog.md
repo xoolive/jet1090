@@ -21,14 +21,40 @@
   trust protocol metadata without clock scoring or a new timing module.
 - Resolve GPS week/day boundaries with checked conversion, preserve sensor IDs
   and frame contents, and skip reception metadata without a sensor identity.
-- Guard unsigned reorder-age subtraction for late packets without changing
-  actual timestamps, window defaults, CPR limits, Beast or native SDR timing.
+- Preserve late reception timestamps without unsigned reorder-age underflow,
+  clock offsets, changed CPR limits or native SDR clock reinterpretation.
 
 ### Message deduplication
 
-- Expire cached groups before adding a new reception, so identical payloads
-  at or beyond the deduplication window remain separate transmissions.
-  Preserve original timestamps and immediate zero-threshold emission.
+- Drain pending groups as well as the emission buffer at input EOF; stop when
+  the downstream consumer closes, including while input is idle.
+- Add opt-in bounded BDS05 candidate association reports, distinguishing merged
+  and split output groups, ambiguous repeated payloads and censored windows.
+  Reports do not change timestamps, matching, clock offsets or CPR checks.
+- Keep multiple active transmissions per payload. Require a unique compatible
+  group, disjoint receiver identities across inputs and a capture-time span
+  strictly below the threshold; preserve ambiguous and out-of-window late inputs.
+- Use fixed monotonic collection deadlines and bounded ready ordering, including
+  idle flushing. With 450/200 ms defaults, collection lasts 650 ms plus up to
+  200 ms of ready ordering; arbitrarily stale sources still cannot guarantee
+  global chronology. Zero threshold remains immediate (and disables reordering).
+  Bound retained groups/messages and warn on early capacity flush instead of
+  silently dropping input receptions.
+- Share the single upstream grid observer through a callback. When a matched
+  group includes a confirmed coarse clock and actual finer reported GNSS time,
+  select that measured reception, preserving every original metadata entry.
+  Do not synthesize midpoints, add offsets, change GPS eligibility or CPR rules.
+
+### Beast input integrity and clock observations
+
+- Preserve complete UDP datagrams and WS/tunnel chunks instead of truncating
+  them to a 1 KiB scratch buffer. Parse complete short frames immediately,
+  preserve fragmented escapes and legacy literal marker bytes, and discard
+  unframed noise.
+- Observe the known raw GPS timestamp grid per connection for UDP, WS and other
+  Beast feeds. Require sustained distinct-tag/bin/span evidence and reset on
+  contradictions; share resolution evidence with dedup without assuming
+  rounding, applying a timestamp correction or promoting clock validity.
 
 ### Redis publication
 

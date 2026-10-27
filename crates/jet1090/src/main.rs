@@ -147,14 +147,14 @@ struct Options {
     #[serde(default)]
     update_position: bool,
 
-    /// When performing deduplication, after how long to dump deduplicated messages (time in ms)
+    /// Capture-time group expiry threshold in milliseconds (not wall-clock residence).
     #[arg(long, default_value = "450")]
     deduplication: Option<u32>,
 
-    /// Reorder window for emission buffer to handle out-of-order timestamps (time in ms)
-    /// This is useful when using UDP sources that batch timestamps, causing messages to
-    /// expire from deduplication cache in non-chronological order. Recommended: 200ms for
-    /// UDP sources, 0 to disable reordering (lower latency but may have backwards timestamps).
+    /// Monotonic lookahead in milliseconds, applied to collection and ready ordering.
+    /// Defaults: 450 ms collection plus up to 200 ms ordering; capture span remains 450 ms.
+    /// Ignored when the deduplication threshold is 0. Does not guarantee globally
+    /// chronological output for arbitrarily stale feeds.
     #[arg(long, default_value = "200")]
     reorder_window: Option<u32>,
 
@@ -738,6 +738,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create shutdown signal channel for coordinated task termination
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
+    // One ingress observer owns raw-grid evidence; dedup only consumes it.
+    let clock_grids = dedup::ClockGrids::default();
     // Collect task handles for graceful shutdown
     let mut source_handles = Vec::new();
 
@@ -754,6 +756,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             source_name,
             shutdown_rx,
             health.clone(),
+            clock_grids.clone(),
         );
         source_handles.push(handle);
     }
@@ -766,6 +769,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tx_dedup,
                 options.deduplication.unwrap_or(450),
                 options.reorder_window.unwrap_or(200),
+                clock_grids,
             )
             .await;
         });

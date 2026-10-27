@@ -17,7 +17,6 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, error, info, trace, warn};
 
-use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::time::Duration;
@@ -97,19 +96,101 @@ const READ_TIMEOUT: Duration = Duration::from_secs(300);
 const KEEPALIVE_TIME: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 
-pub async fn next_msg(mut stream: DataSource) -> impl Stream<Item = Vec<u8>> {
-    // Initialize a HashSet to check for valid message types
-    let valid_msg_types: HashSet<u8> =
-        vec![0x31, 0x32, 0x33, 0x34].into_iter().collect();
+// Evidence only: a grid is not proof of GPS validity or rounding semantics.
+const TIMESTAMP_GRID_NS: u64 = 1 << 27;
+#[derive(Default)]
+struct TimestampGrid {
+    first_second: Option<u64>,
+    tags: std::collections::HashSet<u64>,
+    bins: u8,
+    span_seconds: u64,
+    confirmed: bool,
+}
+impl TimestampGrid {
+    fn observe(&mut self, raw: u64, valid_gps: bool) -> Option<bool> {
+        let seconds = raw >> 30;
+        let fraction = raw & ((1 << 30) - 1);
+        if !valid_gps
+            || seconds >= 86400
+            || fraction >= 1_000_000_000
+            || !fraction.is_multiple_of(TIMESTAMP_GRID_NS)
+        {
+            let was_confirmed = self.confirmed;
+            *self = Self::default();
+            return was_confirmed.then_some(false);
+        }
+        // A replayed/nonconsecutive tag is not independent evidence. Retain
+        // only the first 256 distinct tags: the observer has a fixed memory cap.
+        if self.tags.len() < 256 {
+            self.tags.insert(raw);
+        }
+        self.bins |= 1 << (fraction / TIMESTAMP_GRID_NS);
+        let first = *self.first_second.get_or_insert(seconds);
+        let span = (seconds + 86400 - first) % 86400;
+        if span < 43200 {
+            self.span_seconds = self.span_seconds.max(span);
+        }
+        if !self.confirmed
+            && self.tags.len() >= 256
+            && self.bins == u8::MAX
+            && self.span_seconds >= 5
+        {
+            self.confirmed = true;
+            return Some(true);
+        }
+        None
+    }
+}
 
+// Leave partial escaped frames intact until complete. Preserve the previous
+// reader's acceptance of literal marker bytes; discard only unframed noise.
+fn extract_beast(data: &mut Vec<u8>) -> Option<Vec<u8>> {
+    loop {
+        let Some(start) = data.iter().position(|byte| *byte == 0x1a) else {
+            data.clear();
+            return None;
+        };
+        data.drain(..start);
+        if data.len() < 2 {
+            return None;
+        }
+        let size = match data[1] {
+            0x31 => 11,
+            0x32 => 16,
+            0x33 | 0x34 => 23,
+            _ => {
+                data.remove(0);
+                continue;
+            }
+        };
+        let mut frame = Vec::with_capacity(size);
+        frame.extend_from_slice(&data[..2]);
+        let mut cursor = 2;
+        while frame.len() < size {
+            let byte = *data.get(cursor)?;
+            if byte == 0x1a {
+                let next = *data.get(cursor + 1)?;
+                if next == 0x1a {
+                    cursor += 1;
+                }
+            }
+            frame.push(byte);
+            cursor += 1;
+        }
+        data.drain(..cursor);
+        return Some(frame);
+    }
+}
+
+pub async fn next_msg(mut stream: DataSource) -> impl Stream<Item = Vec<u8>> {
     let mut data = Vec::new();
+    // A UDP read consumes the datagram; a small buffer permanently loses its tail.
+    let mut buffer = vec![0u8; u16::MAX as usize];
     stream! {
     loop {
-        // Read from the stream into the buffer
-        let mut buffer = [0u8; 1024];
         let bytes_read = match &mut stream {
             DataSource::Tcp(tcp_stream) => {
-                match timeout(READ_TIMEOUT, tcp_stream.read(&mut buffer)).await {
+                match timeout(READ_TIMEOUT, tcp_stream.read(&mut buffer[..1024])).await {
                     Ok(Ok(0)) => {
                         info!("Connection closed by peer");
                         break;
@@ -146,11 +227,10 @@ pub async fn next_msg(mut stream: DataSource) -> impl Stream<Item = Vec<u8>> {
             }
             DataSource::Websocket(ws_receive) => {
                 match timeout(READ_TIMEOUT, ws_receive.next()).await {
-                    Ok(Some(Ok(Message::Binary(data)))) => {
-                        debug!("Received {:?}", data);
-                        let len = data.len().min(buffer.len());
-                        buffer[..len].copy_from_slice(&data[..len]);
-                        len
+                    Ok(Some(Ok(Message::Binary(chunk)))) => {
+                        debug!("Received {:?}", chunk);
+                        data.extend_from_slice(&chunk);
+                        0
                     }
                     // pings, pongs and text frames carry no Beast data
                     Ok(Some(Ok(_))) => 0,
@@ -171,11 +251,10 @@ pub async fn next_msg(mut stream: DataSource) -> impl Stream<Item = Vec<u8>> {
             #[cfg(feature = "ssh")]
             DataSource::TunnelledTcp(tunnel_rx) => {
                 match timeout(READ_TIMEOUT, tunnel_rx.recv()).await {
-                    Ok(Ok(Some(makiko::TunnelEvent::Data(data)))) => {
-                        debug!("Received {:?}", data);
-                        let len = data.len().min(buffer.len());
-                        buffer[..len].copy_from_slice(&data[..len]);
-                        len
+                    Ok(Ok(Some(makiko::TunnelEvent::Data(chunk)))) => {
+                        debug!("Received {:?}", chunk);
+                        data.extend_from_slice(&chunk);
+                        0
                     }
                     Ok(_) => {
                         error!("Error reading from tunnel");
@@ -190,11 +269,10 @@ pub async fn next_msg(mut stream: DataSource) -> impl Stream<Item = Vec<u8>> {
             #[cfg(feature = "ssh")]
             DataSource::TunnelledWebSocket(tunnel_rx) => {
                 match timeout(READ_TIMEOUT, tunnel_rx.next()).await {
-                    Ok(Some(Ok(Message::Binary(data)))) => {
-                        debug!("Received {:?}", data);
-                        let len = data.len().min(buffer.len());
-                        buffer[..len].copy_from_slice(&data[..len]);
-                        len
+                    Ok(Some(Ok(Message::Binary(chunk)))) => {
+                        debug!("Received {:?}", chunk);
+                        data.extend_from_slice(&chunk);
+                        0
                     }
                     // pings, pongs and text frames carry no Beast data
                     Ok(Some(Ok(_))) => 0,
@@ -213,57 +291,8 @@ pub async fn next_msg(mut stream: DataSource) -> impl Stream<Item = Vec<u8>> {
         // Extend the data vector with the read bytes
         data.extend_from_slice(&buffer[..bytes_read]);
 
-        while data.len() >= 23 {
-            if let Some(it) = data.iter().position(|&x| x == 0x1A) {
-                data = data.split_off(it);
-
-                if data.len() < 23 {
-                    break;
-                }
-
-                let msg_type = data[1];
-                if valid_msg_types.contains(&msg_type) {
-                    // Collapse consecutive 0x1A into a single 0x1A
-                    let mut ref_idx = 1;
-                    let mut idx;
-                    let msg_size = match msg_type {
-                        0x31 => 11,
-                        0x32 => 16,
-                        0x33 => 23,
-                        0x34 => 23, // Adjust the message size accordingly
-                        _ => 0,
-                    };
-
-                    loop {
-                        idx = data[ref_idx..msg_size.min(data.len())]
-                            .iter()
-                            .position(|&x| x == 0x1A);
-                        if let Some(start) = idx.map(|idx| ref_idx + idx) {
-                            ref_idx = start + 1;
-                            if data.get(ref_idx) == Some(&0x1A) {
-                                data.splice(start..=start, std::iter::empty());
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if idx.is_some() || data.len() < msg_size {
-                        // Move to the next buffer
-                        break;
-                    }
-
-                    let msg = data.drain(..msg_size).collect::<Vec<u8>>();
-                    if msg_type != 0x34 {
-                        yield msg
-                    }
-                } else {
-                    // Probably corrupted message
-                    data = data.split_off(1);
-                }
-            } else {
-                break;
-            }
+        while let Some(msg) = extract_beast(&mut data) {
+            if msg[1] != 0x34 { yield msg; }
         }
     }
     }
@@ -354,10 +383,30 @@ pub async fn receiver<F>(
 where
     F: Fn(ConnectionStatus),
 {
+    receiver_with_timing_callback(address, tx, serial, name, on_status, |_| {})
+        .await
+}
+
+/// Receive Beast data with the same per-connection raw-grid evidence used by
+/// diagnostics. `on_grid(false)` resets evidence on connection changes; true
+/// describes resolution only, never truncation, accuracy or GPS eligibility.
+pub async fn receiver_with_timing_callback<F, G>(
+    address: BeastSource,
+    tx: mpsc::Sender<TimedMessage>,
+    serial: u64,
+    name: Option<String>,
+    on_status: F,
+    on_grid: G,
+) -> io::Result<()>
+where
+    F: Fn(ConnectionStatus),
+    G: Fn(bool),
+{
     let mut backoff = INITIAL_BACKOFF;
 
     on_status(ConnectionStatus::Connecting);
     loop {
+        on_grid(false);
         let source = match connect(&address).await {
             Ok(source) => {
                 on_status(ConnectionStatus::Healthy);
@@ -377,6 +426,7 @@ where
         let msg_stream = next_msg(source).await;
         pin_mut!(msg_stream);
         let mut received_any = false;
+        let mut timestamp_grid = TimestampGrid::default();
         while let Some(msg) = msg_stream.next().await {
             if !received_any {
                 // Only reset the backoff once the new connection has
@@ -385,6 +435,19 @@ where
                 backoff = INITIAL_BACKOFF;
             }
             let tmsg = process_radarcape(&msg, serial, name.clone());
+            if let Some(meta) = tmsg.metadata.first() {
+                if let Some(raw) = meta.nanoseconds {
+                    if let Some(confirmed) = timestamp_grid
+                        .observe(raw, meta.gnss_timestamp.is_some())
+                    {
+                        on_grid(confirmed);
+                        info!(target: "rs1090::source::beast::timing", source = serial,
+                            confirmed, step_ns = TIMESTAMP_GRID_NS,
+                            samples = timestamp_grid.tags.len(), span_seconds = timestamp_grid.span_seconds,
+                            "Raw GPS timestamp grid evidence changed; rounding and clock accuracy unverified");
+                    }
+                }
+            }
             trace!("Received {}", tmsg);
             if tx.send(tmsg).await.is_err() {
                 // The consumer is gone, so there is no point reconnecting
@@ -392,6 +455,7 @@ where
             }
         }
 
+        on_grid(false);
         on_status(ConnectionStatus::Reconnecting);
         warn!("Connection to {address} lost, reconnecting in {backoff:?}");
         sleep(backoff).await;
@@ -469,6 +533,158 @@ mod tests {
         msg.extend_from_slice(&[0x8d; 13]); // 14-byte frame
         msg.push(marker);
         msg
+    }
+
+    fn tag(second: u64, bin: u64) -> u64 {
+        (second << 30) | (bin * TIMESTAMP_GRID_NS)
+    }
+
+    #[test]
+    fn grid_requires_samples_bins_and_span_then_revokes() {
+        let mut grid = TimestampGrid::default();
+        for _ in 0..1000 {
+            assert_eq!(grid.observe(tag(0, 0), true), None);
+        }
+        assert_eq!(grid.tags.len(), 1);
+        for i in 1..256 {
+            grid.observe(tag(i / 8, i % 8), true);
+        }
+        assert!(grid.confirmed);
+        assert_eq!(grid.observe(tag(33, 0) + 1, true), Some(false));
+        assert!(!grid.confirmed);
+        for i in 0..255 {
+            assert_eq!(grid.observe(tag(i / 8, i % 8), true), None);
+        }
+        assert_eq!(grid.observe(tag(31, 7), true), Some(true));
+        assert_eq!(grid.observe(tag(32, 0), false), Some(false));
+    }
+
+    #[test]
+    fn grid_does_not_confirm_fine_tags_or_single_bin_or_short_span() {
+        let mut fine = TimestampGrid::default();
+        let mut one_bin = TimestampGrid::default();
+        let mut short = TimestampGrid::default();
+        for i in 0..1000 {
+            fine.observe(tag(i / 8, i % 8) + i % 17, true);
+            one_bin.observe(tag(i, 0), true);
+            short.observe(tag(0, i % 8), true);
+        }
+        assert!(!fine.confirmed && !one_bin.confirmed && !short.confirmed);
+        let mut replay = TimestampGrid::default();
+        for _ in 0..1000 {
+            for bin in 0..8 {
+                replay.observe(tag(0, bin), true);
+            }
+            replay.observe(tag(5, 0), true);
+        }
+        assert_eq!(replay.tags.len(), 9);
+        assert!(!replay.confirmed);
+    }
+
+    #[test]
+    fn grid_handles_midnight_without_counting_backwards_as_a_day() {
+        let mut grid = TimestampGrid::default();
+        grid.observe(tag(100, 0), true);
+        grid.observe(tag(99, 1), true);
+        assert_eq!(grid.span_seconds, 0);
+        let mut grid = TimestampGrid::default();
+        for i in 0..256 {
+            grid.observe(tag((86398 + i / 8) % 86400, i % 8), true);
+        }
+        assert!(grid.confirmed);
+        assert!(grid.span_seconds < 60);
+        assert!(!TimestampGrid::default().confirmed); // reconnect starts fresh
+    }
+
+    #[test]
+    fn framing_accepts_short_frames_and_fragmented_escapes() {
+        let mut short = vec![0x1a, 0x32];
+        short.extend_from_slice(&[0; 14]);
+        assert_eq!(extract_beast(&mut short.clone()), Some(short));
+        let mut ac = vec![0x1a, 0x31];
+        ac.extend_from_slice(&[0; 9]);
+        assert_eq!(extract_beast(&mut ac.clone()), Some(ac));
+        let mut expected = long_frame(1);
+        expected[7] = 0x1a;
+        expected[15] = 0x1a;
+        let mut escaped = expected[..2].to_vec();
+        for byte in &expected[2..] {
+            escaped.push(*byte);
+            if *byte == 0x1a {
+                escaped.push(*byte);
+            }
+        }
+        for split in 1..escaped.len() {
+            let mut buffer = escaped[..split].to_vec();
+            assert!(extract_beast(&mut buffer).is_none());
+            assert_eq!(buffer, escaped[..split]);
+            buffer.extend_from_slice(&escaped[split..]);
+            assert_eq!(extract_beast(&mut buffer), Some(expected.clone()));
+            assert!(buffer.is_empty());
+        }
+    }
+
+    #[test]
+    fn framing_skips_invalid_prefixes_and_does_not_keep_unframed_noise() {
+        let mut noise = vec![0; 100_000];
+        assert!(extract_beast(&mut noise).is_none());
+        assert!(noise.is_empty());
+        let expected = long_frame(1);
+        let mut data = vec![0x1a, 0x99, 0, 0];
+        data.extend_from_slice(&expected);
+        assert_eq!(extract_beast(&mut data), Some(expected));
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn framing_keeps_legacy_single_marker_bytes_in_clock_and_payload() {
+        let mut expected = long_frame(1);
+        expected[4] = 0x1a;
+        expected[5] = 0x33;
+        expected[12] = 0x1a;
+        let mut buffer = expected.clone();
+        assert_eq!(extract_beast(&mut buffer), Some(expected));
+        assert!(buffer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn websocket_preserves_binary_messages_larger_than_scratch_buffer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected = long_frame(1);
+        let payload = expected.repeat(96);
+        let server = tokio::spawn(async move {
+            use futures_util::SinkExt;
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            ws.send(Message::Binary(payload.into())).await.unwrap();
+            ws.close(None).await.unwrap();
+        });
+        let (ws, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let (_, read) = ws.split();
+        let stream = next_msg(DataSource::Websocket(read)).await;
+        pin_mut!(stream);
+        let frames: Vec<_> = stream.take(96).collect().await;
+        assert_eq!(frames, vec![expected; 96]);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn udp_preserves_datagrams_larger_than_scratch_buffer() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let expected = long_frame(1);
+        sender
+            .send_to(&expected.repeat(96), socket.local_addr().unwrap())
+            .await
+            .unwrap();
+        let stream = next_msg(DataSource::Udp(socket)).await;
+        pin_mut!(stream);
+        let frames: Vec<_> =
+            timeout(Duration::from_secs(1), stream.take(96).collect())
+                .await
+                .expect("complete datagram must be parsed");
+        assert_eq!(frames, vec![expected; 96]);
     }
 
     #[tokio::test]

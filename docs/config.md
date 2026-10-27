@@ -28,7 +28,8 @@ By default, the configuration file is located in:
 ## General settings
 
 ```toml
-deduplication = 800        # buffer interval for deduplication, in milliseconds
+deduplication = 450        # merge window for duplicate receptions, in milliseconds
+reorder_window = 200       # extra ordering lookahead, in milliseconds
 flags = false              # add a flag emoji column in the interactive table
 history_expire = 10        # in minutes
 interactive = false        # display a table view
@@ -40,6 +41,10 @@ serve_port = 8080          # for the REST API
 update_position = false    # auto-update the reference position (useful when on a moving aircraft)
 verbose = false            # display decoded messages in the terminal
 ```
+
+The two deduplication entries control how receptions of the same transmission
+are merged and ordered; see [the dedicated page](deduplication.md) for their
+effect on latency, and `--no-deduplication` to disable merging altogether.
 
 Legacy `prevent_sleep = true` and `false` remain supported: `true` maps to
 `"warn"` (prevent sleep and warn about macOS power settings, without forcing
