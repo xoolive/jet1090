@@ -1420,7 +1420,7 @@ checksum = "ab7964d71b1fa71b9453f92a2ce414bba4d71b6ccd24f0c3ffa766c33038c944"
 dependencies = [
  "async-compression",
  "biquad",
- "dirs",
+ "dirs 6.0.0",
  "futures",
  "hound",
  "num-complex",
@@ -1465,6 +1465,15 @@ name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
 dependencies = [
  "dirs-sys",
 ]
@@ -2488,7 +2497,7 @@ dependencies = [
  "crossterm",
  "deku",
  "desperado",
- "dirs",
+ "dirs 6.0.0",
  "dotenv",
  "futures",
  "futures-util",
@@ -4134,7 +4143,7 @@ dependencies = [
  "criterion",
  "deku",
  "desperado",
- "dirs",
+ "dirs 6.0.0",
  "futures",
  "futures-util",
  "hex",
@@ -4686,12 +4695,12 @@ dependencies = [
 
 [[package]]
 name = "ssh2-config"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16d2108aade44855426db8417ee923f1cfc0c4b38b4bb4bd26d936f0d0f79e0f"
+checksum = "3f8aade2961db6d07192035b809806be8fc32ca8875f9395e9e97239eeb2ed10"
 dependencies = [
  "bitflags 2.13.2",
- "dirs",
+ "dirs 7.0.0",
  "glob",
  "log",
  "thiserror 2.0.20",
