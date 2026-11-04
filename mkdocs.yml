@@ -7,6 +7,7 @@ nav:
   - Home: "index.md"
   - Installation: "install.md"
   - Sources of data: "sources.md"
+  - Deduplication: "deduplication.md"
   - Serving real-time data: "output.md"
   - Configuration options: "config.md"
   - Contribute to the project: "contribute.md"

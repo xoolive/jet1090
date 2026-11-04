@@ -161,7 +161,32 @@ A client that reads too slowly is moved to the live edge of the feed and misses 
 
 If the `--redis-url` is set, all messages are sent to the Redis pub/sub instance.
 
-The default topic is `jet1090` but it can be overriden with the `--redis-topic` option.
+The default topic is `jet1090` but it can be overridden with the `--redis-topic` option.
+
+The main loop pipelines up to 16 messages or 64 KiB of combined JSON payloads,
+with a 5 ms collection deadline from the first message. There is no separate
+publication task or additional queue. A larger individual payload is sent whole
+in its own batch; these limits are not a fixed total process-memory cap.
+Flushing runs between messages, with due batches prioritized over new input;
+current-message processing, scheduling and network time are additional to the
+deadline.
+
+JSON contents and capture timestamps are unchanged. Without transport errors,
+publication preserves emission order. The main loop waits for acknowledgements
+once per batch, and pauses during flushing or retries. Redis, `/stream`, file
+output and history are not an atomic transaction.
+
+`--redis-retry-interval` controls retries (default: 5 seconds). On failure the
+publisher reconnects and retries the pending batch before advancing. A connection
+failure can leave delivery uncertain: an already-published prefix may be replayed,
+and a warning reports this possibility. Setting the interval to `0` skips a
+failed batch with a warning instead. Redis Pub/Sub is not durable or exactly-once
+subscriber delivery.
+
+Normal shutdown flushes the pending batch. Flushing is bounded to
+two seconds; a timeout reports unacknowledged messages, which may already
+have reached Redis, and produces an unsuccessful exit. This covers accepted JSON
+output, not every upstream radio frame still in a source or deduplication buffer.
 
 You may run a Redis server as a Docker or podman instance:
 
