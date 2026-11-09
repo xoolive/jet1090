@@ -136,6 +136,19 @@ jet1090 --verbose soapy://driver=plutosdr
 
 For more details on SoapySDR configuration options, see the [configuration documentation](config.md#soapysdr).
 
+## Recorded IQ files
+
+With the `sdr` feature, `file://` sources decode raw cu8/cs8/cs16/cf32 recordings,
+including zstd-compressed files. GQRX and rtl_sdr filename metadata can provide
+rate/format and, for a complete dated/time-stamped GQRX name, a UTC replay origin.
+Explicit settings override inferred parameters. Unknown names retain the legacy
+2.4 MS/s/cu8 defaults and approximate file-time origin.
+
+The demodulators support 2.4 and 6 MS/s only, centered at 1090 MHz; no automatic
+resampling or frequency translation is performed. WAV containers are rejected
+rather than read as raw samples. See [offline IQ configuration](config.md#iq-file-offline-decoding)
+for aliases, precedence and timestamp limitations.
+
 ## Beast format
 
 ### TCP

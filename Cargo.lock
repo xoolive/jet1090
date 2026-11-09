@@ -1414,13 +1414,13 @@ dependencies = [
 
 [[package]]
 name = "desperado"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab7964d71b1fa71b9453f92a2ce414bba4d71b6ccd24f0c3ffa766c33038c944"
+checksum = "e5d0a44460d70b19d05d16517e0e0b5696c45dc77debc5af11c5f6cfdd53cfa1"
 dependencies = [
  "async-compression",
  "biquad",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "futures",
  "hound",
  "num-complex",
@@ -1432,7 +1432,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "zstd 0.13.3",
+ "zstd 0.14.0",
 ]
 
 [[package]]
@@ -1632,7 +1632,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3754,7 +3754,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4098,9 +4098,9 @@ dependencies = [
 
 [[package]]
 name = "rs-hackrf"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6291a4d456410ddb657dc65bcaad3ebe8e06c265e37233c338f863943e23dad"
+checksum = "53727ffef8d8092a9e9f0bbce1350deed0a75ee41a9404986d4dce72034c16bf"
 dependencies = [
  "nusb",
  "thiserror 2.0.20",
@@ -4109,9 +4109,9 @@ dependencies = [
 
 [[package]]
 name = "rs-rtl"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f64080cfcfce7cafd33c3a88630f86c2425be38db78efbd8d73f56f9decad101"
+checksum = "b2260a79b7705ad9da2b8c4acfa84f0a09f28a02031b768f88bdf32e3faa33c6"
 dependencies = [
  "nusb",
  "thiserror 2.0.20",
@@ -4120,9 +4120,9 @@ dependencies = [
 
 [[package]]
 name = "rs-spy"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6b4f9e49461174998cb489458abd7e7170d30c2e96734810176aafc3df81793"
+checksum = "e82b5d2fa2af7072cf8881f0a7a97fa0c125743493db56f1bc1d87c2a7d3abdc"
 dependencies = [
  "num-complex",
  "nusb",
@@ -4272,7 +4272,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4824,10 +4824,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5769,7 +5769,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -343,13 +343,34 @@ You can decode pre-recorded IQ files captured from SDR devices. This is useful f
 - **cu8**: Complex unsigned 8-bit (RTL-SDR default format)
 - **cs8**: Complex signed 8-bit
 - **cs16**: Complex signed 16-bit little-endian
+- **cf32**: Complex 32-bit floating point, little-endian
+
+Format names are case-insensitive. Desperado aliases such as `U8`, `S16`,
+`S16_LE` and GQRX `fc` are accepted. An invalid explicit format is an error,
+not a request to fall back to cu8.
+
+For raw IQ files (also `.zst`), GQRX and rtl_sdr capture names can supply the
+sample rate and format. Explicit `sample_rate` and `iq_format` settings take
+precedence; otherwise unknown names default to 2.4 MS/s and cu8. Only 2.4 and
+6 MS/s are supported: there is no automatic resampling. A known filename
+center frequency must be 1090 MHz; no frequency shifting is performed.
+WAV containers, including SDRuno WAV recordings, must first be converted to raw
+IQ; recognizing their names does not make the raw reader WAV-compatible.
+
+A full UTC date/time in a GQRX filename supplies the replay origin. A date-only
+rtl_sdr name does **not** imply midnight. Without a complete capture start,
+file modification time (creation time if unavailable) remains an approximate
+fallback, with a warning. Filename time is not a GNSS timing guarantee. Each
+message adds its preamble sample offset to that origin, using actual buffer
+lengths; live SDR timing is unchanged.
 
 **TOML Configuration:**
 
 ```toml
 [[sources]]
 file = "/path/to/recording.iq"
-iq_format = "cu8"  # Optional, defaults to "cu8"
+iq_format = "cu8"  # Optional: overrides filename metadata
+sample_rate = 2400000  # Optional: overrides filename metadata (samples/s)
 name = "Recording 2024-01-19"
 airport = "LFBO"
 ```
@@ -374,12 +395,23 @@ jet1090 "file:///home/user/adsb.iq?format=cu8"
 # With tilde expansion
 jet1090 "file://~/recordings/adsb.iq?format=cu8"
 
-# Default format (cu8) - format parameter optional
+# Format parameter optional: use filename metadata, otherwise cu8
 jet1090 "file:///path/to/file.iq"
 
 # With location context
 jet1090 "file://~/adsb.iq?format=cu8&LFBO"
 ```
+
+For example, this raw GQRX recording supplies 6 MS/s, cf32 and a UTC start
+without additional configuration:
+
+```bash
+jet1090 'file:///recordings/gqrx_20260603_083011_1090000000_6000000_fc.raw.zst'
+```
+
+`sample_rate` remains a numeric TOML field; Desperado's new `Hz` parser does not
+make strings such as `"6 MHz"` valid here. An override describes the actual file
+encoding—it does not convert the samples.
 
 !!! tip "Recording IQ files"
 
