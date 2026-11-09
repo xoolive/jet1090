@@ -120,6 +120,33 @@ That format is easily accessible from several libraries across programming langu
     df <- ndjson::stream_in("output.jsonl")
     ```
 
+## DF11 interrogator identifiers
+
+DF11 `interrogator` is a flat string, shared with uplink1030:
+
+- `"II0"` through `"II15"`: Interrogator Identifier codes.
+- `"SI1"` through `"SI63"`: Surveillance Identifier codes.
+- `"SI0"`: the **unallocated** SI0 bit pattern, retained for diagnostics.
+- `"invalid"`: a CRC syndrome outside the permitted II/SI range.
+
+The full 24-bit syndrome is used when decoding; it is never masked into a
+plausible identifier. `II0` also covers acquisition squitters and intermode
+all-call replies: it neither identifies one radar nor proves a preceding UF11.
+Code equality alone does not establish an interrogation/reply association.
+
+This replaces the emitted object form, for example
+`{"type":"II","value":0}` becomes `"II0"`. Consumers reading `.type`/`.value`
+must switch to the string. Rust archive readers continue to accept old objects;
+a missing or null identifier stays absent and never becomes `II0`. Python and
+WASM decoded outputs use the same flat strings.
+
+Rust retains `Invalid(u32)` for binary and legacy-object diagnostics, so a known
+invalid syndrome still displays as `invalid (0x00005c)`, for example. Flat
+`"invalid"` does not carry that payload: after reading it, diagnostics report
+`invalid (syndrome unavailable)` rather than claiming the syndrome was zero.
+Re-decode the original `frame` if the exact syndrome is needed. Invalid-code
+JSON round-trips preserve the JSON, not necessarily the in-memory payload.
+
 ## REST API
 
 If a `--serve-port` option is set, a REST API is set on `0.0.0.0` on the port of your choice.

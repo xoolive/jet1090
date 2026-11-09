@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### DF11 JSON alignment with uplink1030
+
+- Emit `interrogator` as `"II0"`–`"II15"`, `"SI1"`–`"SI63"`, diagnostic
+  `"SI0"` (unallocated), or `"invalid"`, instead of a tagged object. This
+  patch-scoped schema adjustment changes Python/WASM output too; consumers
+  using `.type`/`.value` must switch to the string.
+- Continue reading legacy tagged objects and preserve absent/null identifiers
+  without inventing II0. Reject noncanonical or out-of-range code strings.
+- Keep full-width invalid syndromes in Rust/binary and legacy-object paths.
+  Flat `"invalid"` loses the exact syndrome payload; report it as unavailable
+  rather than presenting a fabricated zero in human-readable diagnostics.
+
 ## [0.8.0] - 2026-11-09
 
 ### Migration notes

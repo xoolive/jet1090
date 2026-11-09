@@ -1,4 +1,25 @@
+import pytest
 import rs1090
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected"),
+    [
+        ("5d34530e459cfc", "II0"),
+        ("5d34530e459cf3", "II15"),
+        ("5d34530e459cec", "SI0"),
+        ("5d34530e459ced", "SI1"),
+        ("5d34530e459cb3", "SI63"),
+        ("5d34530e459ca0", "invalid"),
+        ("5d34530eba6303", "invalid"),
+    ],
+)
+def test_df11_interrogator_is_a_flat_code(frame: str, expected: str) -> None:
+    # Parity overlays of the captured syndrome-92 frame cover code boundaries.
+    msg = rs1090.decode(frame)
+    assert rs1090.is_df11(msg)
+    assert msg["interrogator"] == expected
+    assert "crc_syndrome" not in msg
 
 
 def test_crc() -> None:

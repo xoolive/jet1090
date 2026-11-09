@@ -298,18 +298,21 @@ pub enum DF {
 /// can turn invalid frames into plausible identifiers. II0 also covers
 /// unsolicited acquisition squitters and intermode all-call replies; it does
 /// not identify a unique radar or establish a preceding UF11.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value")]
+///
+/// JSON uses flat codes: `II0`–`II15`, `SI1`–`SI63`, diagnostic `SI0` (not
+/// allocated), or `invalid`. Legacy tagged objects remain readable. Flat
+/// `invalid` has no syndrome payload; it is represented by `Invalid(0)`, not
+/// by II0. Decode the original frame to recover the exact syndrome if needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterrogatorIdentifier {
     /// Interrogator Identifier, 0 through 15.
     II(u8),
     /// Surveillance Identifier, 1 through 63 (syndrome minus 16).
     SI(u8),
     /// Syndrome 16 would encode SI0, which is not an allocated SI code.
-    #[serde(rename = "invalid_si0")]
     InvalidSI0,
     /// Full syndrome outside the permitted II/SI range, retained for diagnosis.
-    #[serde(rename = "invalid")]
+    /// Zero is the unknown-syndrome sentinel when reading flat `"invalid"` JSON.
     Invalid(u32),
 }
 
@@ -324,12 +327,98 @@ impl From<u32> for InterrogatorIdentifier {
     }
 }
 
+impl Serialize for InterrogatorIdentifier {
+    fn serialize<S: Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::II(code) if *code <= 15 => {
+                serializer.collect_str(&format_args!("II{code}"))
+            }
+            Self::SI(code) if (1..=63).contains(code) => {
+                serializer.collect_str(&format_args!("SI{code}"))
+            }
+            Self::InvalidSI0 => serializer.serialize_str("SI0"),
+            Self::Invalid(_) => serializer.serialize_str("invalid"),
+            Self::II(_) | Self::SI(_) => Err(serde::ser::Error::custom(
+                "II/SI code is outside its allocated range",
+            )),
+        }
+    }
+}
+
+impl std::str::FromStr for InterrogatorIdentifier {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "SI0" => return Ok(Self::InvalidSI0),
+            "invalid" => return Ok(Self::Invalid(0)),
+            _ => {}
+        }
+        if let Some(number) = value.strip_prefix("II") {
+            if let Ok(code) = number.parse::<u8>() {
+                if code <= 15 && number == code.to_string() {
+                    return Ok(Self::II(code));
+                }
+            }
+        }
+        if let Some(number) = value.strip_prefix("SI") {
+            if let Ok(code) = number.parse::<u8>() {
+                if (1..=63).contains(&code) && number == code.to_string() {
+                    return Ok(Self::SI(code));
+                }
+            }
+        }
+        Err(format!("invalid DF11 interrogator code: {value:?}"))
+    }
+}
+
+impl<'de> Deserialize<'de> for InterrogatorIdentifier {
+    fn deserialize<D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "type", content = "value")]
+        enum Legacy {
+            II(u8),
+            SI(u8),
+            #[serde(rename = "invalid_si0")]
+            InvalidSI0,
+            #[serde(rename = "invalid")]
+            Invalid(u32),
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Flat(String),
+            Legacy(Legacy),
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Flat(code) => code.parse().map_err(serde::de::Error::custom),
+            Wire::Legacy(Legacy::II(code)) if code <= 15 => Ok(Self::II(code)),
+            Wire::Legacy(Legacy::SI(code)) if (1..=63).contains(&code) => {
+                Ok(Self::SI(code))
+            }
+            Wire::Legacy(Legacy::InvalidSI0) => Ok(Self::InvalidSI0),
+            Wire::Legacy(Legacy::Invalid(syndrome)) => {
+                Ok(Self::Invalid(syndrome))
+            }
+            _ => Err(serde::de::Error::custom(
+                "legacy II/SI code is outside its allocated range",
+            )),
+        }
+    }
+}
+
 impl fmt::Display for InterrogatorIdentifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::II(code) => write!(f, "II{code}"),
             Self::SI(code) => write!(f, "SI{code}"),
             Self::InvalidSI0 => write!(f, "invalid SI0"),
+            Self::Invalid(0) => write!(f, "invalid (syndrome unavailable)"),
             Self::Invalid(syndrome) => write!(f, "invalid ({syndrome:#08x})"),
         }
     }
@@ -1233,15 +1322,23 @@ mod tests {
 
     #[test]
     fn test_df11_syndrome_boundaries_and_full_width() {
-        for (syndrome, expected) in [
-            (0, InterrogatorIdentifier::II(0)),
-            (15, InterrogatorIdentifier::II(15)),
-            (16, InterrogatorIdentifier::InvalidSI0),
-            (17, InterrogatorIdentifier::SI(1)),
-            (79, InterrogatorIdentifier::SI(63)),
-            (80, InterrogatorIdentifier::Invalid(80)),
-            (0x800001, InterrogatorIdentifier::Invalid(0x800001)),
-            (0xffffff, InterrogatorIdentifier::Invalid(0xffffff)),
+        for (syndrome, expected, code) in [
+            (0, InterrogatorIdentifier::II(0), "II0"),
+            (15, InterrogatorIdentifier::II(15), "II15"),
+            (16, InterrogatorIdentifier::InvalidSI0, "SI0"),
+            (17, InterrogatorIdentifier::SI(1), "SI1"),
+            (79, InterrogatorIdentifier::SI(63), "SI63"),
+            (80, InterrogatorIdentifier::Invalid(80), "invalid"),
+            (
+                0x800001,
+                InterrogatorIdentifier::Invalid(0x800001),
+                "invalid",
+            ),
+            (
+                0xffffff,
+                InterrogatorIdentifier::Invalid(0xffffff),
+                "invalid",
+            ),
         ] {
             assert_eq!(InterrogatorIdentifier::from(syndrome), expected);
             // Construct parity for a desired syndrome independently of decoding.
@@ -1263,10 +1360,7 @@ mod tests {
             }
             let json = serde_json::to_value(&decoded).unwrap();
             assert!(json.get("crc_syndrome").is_none());
-            assert_eq!(
-                json["interrogator"],
-                serde_json::to_value(expected).unwrap()
-            );
+            assert_eq!(json["interrogator"], code);
             assert_eq!(json["icao24"], "39d30e");
             assert!(json.get("p_icao").is_none());
             assert!(json.get("crc").is_none());
@@ -1278,7 +1372,12 @@ mod tests {
             } = restored.df
             {
                 assert_eq!(crc_syndrome, None);
-                assert_eq!(interrogator, Some(expected));
+                let restored_identifier = if syndrome > 79 {
+                    InterrogatorIdentifier::Invalid(0)
+                } else {
+                    expected
+                };
+                assert_eq!(interrogator, Some(restored_identifier));
             } else {
                 panic!("Expected DF11");
             }
@@ -1298,10 +1397,152 @@ mod tests {
             serde_json::to_value(&decoded).unwrap(),
             serde_json::json!({
                 "df": "11", "icao24": "34530e", "capability": "airborne",
-                "interrogator": {"type": "invalid", "value": 92}
+                "interrogator": "invalid"
             })
         );
         assert!(decoded.to_string().contains("invalid (0x00005c)"));
+    }
+
+    #[test]
+    fn test_df11_reads_legacy_objects_but_writes_flat_codes() {
+        for (legacy, expected, code) in [
+            (
+                serde_json::json!({"type":"II", "value":0}),
+                InterrogatorIdentifier::II(0),
+                "II0",
+            ),
+            (
+                serde_json::json!({"type":"II", "value":15}),
+                InterrogatorIdentifier::II(15),
+                "II15",
+            ),
+            (
+                serde_json::json!({"type":"SI", "value":1}),
+                InterrogatorIdentifier::SI(1),
+                "SI1",
+            ),
+            (
+                serde_json::json!({"type":"SI", "value":63}),
+                InterrogatorIdentifier::SI(63),
+                "SI63",
+            ),
+            (
+                serde_json::json!({"type":"invalid_si0"}),
+                InterrogatorIdentifier::InvalidSI0,
+                "SI0",
+            ),
+            (
+                serde_json::json!({"type":"invalid", "value":92}),
+                InterrogatorIdentifier::Invalid(92),
+                "invalid",
+            ),
+            (
+                serde_json::json!({"type":"invalid", "value":0xffffff}),
+                InterrogatorIdentifier::Invalid(0xffffff),
+                "invalid",
+            ),
+        ] {
+            let decoded: Message = serde_json::from_value(serde_json::json!({"df":"11", "icao24":"39d30e", "capability":"airborne", "interrogator":legacy})).unwrap();
+            if let DF::AllCallReply {
+                interrogator,
+                crc_syndrome,
+                ..
+            } = decoded.df
+            {
+                assert_eq!(interrogator, Some(expected));
+                assert_eq!(crc_syndrome, None);
+            } else {
+                panic!("Expected DF11");
+            }
+            assert_eq!(
+                serde_json::to_value(decoded).unwrap()["interrogator"],
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn test_df11_flat_codes_are_canonical_and_range_checked() {
+        for code in (0..=15)
+            .map(|n| format!("II{n}"))
+            .chain((0..=63).map(|n| format!("SI{n}")))
+            .chain(["invalid".to_owned()])
+        {
+            let decoded: InterrogatorIdentifier = code.parse().unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), code);
+            assert_eq!(
+                serde_json::from_value::<InterrogatorIdentifier>(
+                    serde_json::json!(code)
+                )
+                .unwrap(),
+                decoded
+            );
+        }
+        for code in [
+            "",
+            "II",
+            "SI",
+            "II16",
+            "SI64",
+            "II255",
+            "SI255",
+            "II00",
+            "SI01",
+            "II+1",
+            "II-1",
+            "II 1",
+            "II1 ",
+            "ii0",
+            "si0",
+            "invalid_si0",
+            "invalid (0x00005c)",
+        ] {
+            assert!(code.parse::<InterrogatorIdentifier>().is_err(), "{code}");
+            assert!(
+                serde_json::from_value::<InterrogatorIdentifier>(
+                    serde_json::json!(code)
+                )
+                .is_err(),
+                "{code}"
+            );
+        }
+        for legacy in [
+            serde_json::json!({"type":"II","value":16}),
+            serde_json::json!({"type":"SI","value":0}),
+            serde_json::json!({"type":"SI","value":64}),
+            serde_json::json!({"type":"invalid"}),
+            serde_json::json!({"type":"unknown","value":0}),
+        ] {
+            assert!(serde_json::from_value::<InterrogatorIdentifier>(legacy)
+                .is_err());
+        }
+        for invalid in [
+            InterrogatorIdentifier::II(16),
+            InterrogatorIdentifier::SI(0),
+            InterrogatorIdentifier::SI(64),
+        ] {
+            assert!(serde_json::to_value(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn test_df11_unknown_invalid_syndrome_is_not_reported_as_zero() {
+        let decoded: InterrogatorIdentifier = "invalid".parse().unwrap();
+        assert_eq!(decoded, InterrogatorIdentifier::Invalid(0));
+        assert_eq!(decoded.to_string(), "invalid (syndrome unavailable)");
+        assert_eq!(
+            InterrogatorIdentifier::from(0),
+            InterrogatorIdentifier::II(0)
+        );
+        assert_eq!(
+            InterrogatorIdentifier::Invalid(92).to_string(),
+            "invalid (0x00005c)"
+        );
+        let decoded: Message = serde_json::from_value(serde_json::json!({"df":"11", "icao24":"39d30e", "capability":"airborne", "interrogator":null})).unwrap();
+        assert!(serde_json::to_value(decoded)
+            .unwrap()
+            .get("interrogator")
+            .is_none());
     }
 
     #[test]
