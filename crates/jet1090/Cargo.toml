@@ -51,7 +51,10 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 url = "2.5.7"
 
 [dev-dependencies]
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 tokio = { version = "1.52.1", features = ["test-util"] }
+zip = { version = "8", default-features = false }
+zstd = "0.14.0"
 
 [[bin]]
 name = "jet1090"

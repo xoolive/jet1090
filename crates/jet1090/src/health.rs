@@ -46,6 +46,9 @@ pub struct HealthState {
     pub sources: BTreeMap<String, SourceStatus>,
     pub events: VecDeque<HealthEvent>,
     pub unread_errors: usize,
+    // Sticky finite-input failures, independent of tracing filters and later
+    // status updates. Checked after the input graph and outputs have drained.
+    pub input_failures: BTreeMap<String, String>,
 }
 
 pub type SharedHealth = Arc<Mutex<HealthState>>;
@@ -69,6 +72,25 @@ pub fn set_source_status(
 ) {
     let mut health = health.lock().expect("health state lock poisoned");
     health.sources.insert(source.to_string(), status);
+}
+
+#[cfg(any(feature = "sdr", test))]
+pub fn fail_input(health: &SharedHealth, source: &str, error: String) {
+    let mut health = health.lock().expect("health state lock poisoned");
+    health
+        .sources
+        .insert(source.to_owned(), SourceStatus::Failed);
+    health.input_failures.insert(source.to_owned(), error);
+}
+
+pub fn input_result(health: &SharedHealth) -> Result<(), String> {
+    let health = health.lock().expect("health state lock poisoned");
+    match health.input_failures.first_key_value() {
+        Some((source, error)) => {
+            Err(format!("IQ file source '{source}' failed: {error}"))
+        }
+        None => Ok(()),
+    }
 }
 
 pub fn mark_events_read(health: &SharedHealth) {
@@ -219,6 +241,24 @@ impl Visit for EventVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finite_input_failure_survives_status_and_event_updates() {
+        let health = new_health();
+        assert!(input_result(&health).is_ok());
+        register_source(&health, "file".into());
+        fail_input(&health, "file", "truncated IQ pair".into());
+        assert_eq!(
+            health.lock().unwrap().sources["file"],
+            SourceStatus::Failed
+        );
+        // Does not depend on a tracing subscriber, log level, or event retention.
+        set_source_status(&health, "file", SourceStatus::Healthy);
+        mark_events_read(&health);
+        assert!(input_result(&health)
+            .unwrap_err()
+            .contains("truncated IQ pair"));
+    }
 
     #[test]
     fn retains_a_bounded_event_history() {
