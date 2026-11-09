@@ -176,6 +176,8 @@ class DF11(TypedDict):
     df: Literal["11"]
     capability: str
     icao24: str
+    # II0..II15, SI1..SI63, diagnostic SI0, or invalid; absent in legacy data.
+    interrogator: NotRequired[str]
 
 
 class DF16(TypedDict):

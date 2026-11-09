@@ -2,6 +2,21 @@ import { decode } from "rs1090-wasm";
 import { expect, describe, test } from "@jest/globals";
 
 describe("Common Decoding Tests", () => {
+  test.each([
+    ["5d34530e459cfc", "II0"],
+    ["5d34530e459cf3", "II15"],
+    ["5d34530e459cec", "SI0"],
+    ["5d34530e459ced", "SI1"],
+    ["5d34530e459cb3", "SI63"],
+    ["5d34530e459ca0", "invalid"],
+    ["5d34530eba6303", "invalid"],
+  ])("DF11 %s emits flat interrogator %s", (frame, expected) => {
+    const msg = decode(frame);
+    expect(msg.df).toBe("11");
+    expect(msg.interrogator).toBe(expected);
+    expect(msg.crc_syndrome).toBeUndefined();
+  });
+
   test("crc", () => {
     expect(decode("8D406B902015A678D4D220AA4BDA").df).toBe("17");
     expect(decode("8d8960ed58bf053cf11bc5932b7d").df).toBe("17");
@@ -14,7 +29,7 @@ describe("Common Decoding Tests", () => {
 
   test("fail crc with message", () => {
     expect(() => decode("8d4ca251204994b1c36e60a5343d")).toThrow(
-      "Invalid CRC in ADS-B message: 16"
+      "Invalid CRC in ADS-B message: 16",
     );
   });
 
