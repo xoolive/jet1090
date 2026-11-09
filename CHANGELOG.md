@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased
+## [0.8.0] - 2026-11-09
+
+### Migration notes
+
+- This minor release contains breaking Rust API changes: unavailable BDS20
+  callsigns are now optional, and constructing `DF::AllCallReply` requires the
+  new optional interrogator/syndrome fields. JSON consumers must tolerate absent
+  callsigns; decoded BDS20 objects are still retained.
+- `decode1090 file` now preserves input order and disables deduplication by
+  default. Use `--input-order=false --deduplication 400` to restore the previous
+  sorting/deduplication defaults. Position-reference update policy also changes
+  as described below.
+- Live matching retains original capture timestamps but may wait longer before
+  emitting: default collection is 650 ms plus up to 200 ms of ready ordering,
+  excluding processing/backpressure. No CPR limits or live SDR clocks are relaxed.
+
+### HTTP message streaming
+
+- Add `/stream` to the HTTP server for live decoded messages as server-sent
+  events, using the same JSON as JSONL output and Redis. Slow clients may skip
+  messages; this is a live feed, not durable history replay.
 
 ### Recorded IQ sources
 
