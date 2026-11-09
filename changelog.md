@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Recorded IQ sources
+
+- Update Desperado to 0.5.2, including its SDR shutdown fixes and new capture
+  filename/format parsing support.
+- Infer raw IQ sample rate, format and full UTC start from recognized capture
+  filenames, including `.zst`, while preserving explicit rate/format overrides
+  and legacy defaults for unknown names. Accept the upstream IQ format aliases.
+- Reject unsupported sample rates, known non-1090 MHz centers, WAV containers
+  and invalid explicit formats instead of silently misinterpreting the data.
+  There is no automatic resampling or frequency translation.
+- Warn when replay uses approximate file modification/creation time rather than
+  a complete encoded UTC start. Date-only names do not imply midnight.
+- Include each decoded preamble's sample offset in offline replay timestamps;
+  advance by actual buffer lengths and stop when the output closes or reading
+  fails. Preserve the public file receiver signature and live SDR timing.
+
 ### Configuration compatibility
 
 - Restore legacy boolean `prevent_sleep` settings alongside named modes:

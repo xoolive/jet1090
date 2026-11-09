@@ -42,19 +42,19 @@ use desperado::DeviceConfig;
 use desperado::Gain;
 #[cfg(feature = "sdr")]
 use desperado::IqAsyncSource;
-#[cfg(feature = "sdr")]
+#[cfg(feature = "hackrf")]
 use desperado::{GainElement, GainElementName};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
-#[cfg(feature = "sdr")]
-use tokio::time::{sleep, Duration};
-use tracing::error;
 #[cfg(any(
     feature = "rtlsdr",
     feature = "airspy",
     feature = "hackrf",
     feature = "soapy"
 ))]
+use tokio::time::{sleep, Duration};
+use tracing::error;
+#[cfg(feature = "sdr")]
 use tracing::warn;
 use url::Url;
 
@@ -66,6 +66,62 @@ const MODES_FREQ: f64 = 1.09e9;
 const RATE_2_4M: f64 = 2.4e6;
 #[cfg(feature = "sdr")]
 const RATE_6M: f64 = 6.0e6;
+
+#[cfg(feature = "sdr")]
+#[derive(Debug)]
+struct IqFileParameters {
+    sample_rate: f64,
+    format: desperado::IqFormat,
+    capture_start: Option<std::time::SystemTime>,
+}
+
+#[cfg(feature = "sdr")]
+fn iq_file_parameters(
+    path: &std::path::Path,
+    explicit_rate: Option<f64>,
+    explicit_format: Option<&str>,
+) -> Result<IqFileParameters, String> {
+    // Filename metadata does not make a container file a raw IQ stream.
+    let uncompressed = if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zst"))
+    {
+        path.with_extension("")
+    } else {
+        path.to_path_buf()
+    };
+    if uncompressed
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"))
+    {
+        return Err("WAV IQ containers are not supported by this raw IQ reader; convert to raw IQ first".into());
+    }
+    let metadata = desperado::capture::parse_capture_filename(&uncompressed);
+    if let Some(center) = metadata.and_then(|m| m.center_freq_hz) {
+        if f64::from(center) != MODES_FREQ {
+            return Err(format!("IQ capture center frequency is {center} Hz, expected {MODES_FREQ} Hz; frequency shifting is not supported"));
+        }
+    }
+    let sample_rate = explicit_rate
+        .or_else(|| metadata.and_then(|m| m.sample_rate_hz.map(f64::from)))
+        .unwrap_or(RATE_2_4M);
+    if !matches!(sample_rate, RATE_2_4M | RATE_6M) {
+        return Err(format!("Unsupported IQ sample rate: {sample_rate} (supported: 2400000, 6000000); resampling is not performed"));
+    }
+    let format = match explicit_format {
+        Some(value) => value
+            .parse()
+            .map_err(|error| format!("Invalid IQ format '{value}': {error}"))?,
+        None => metadata
+            .and_then(|m| m.format)
+            .unwrap_or(desperado::IqFormat::Cu8),
+    };
+    Ok(IqFileParameters {
+        sample_rate,
+        format,
+        capture_start: metadata.and_then(|m| m.start),
+    })
+}
 
 #[cfg(feature = "rtlsdr")]
 const RTLSDR_GAIN: f64 = 49.6;
@@ -998,64 +1054,41 @@ impl Source {
             #[cfg(feature = "sdr")]
             Address::File(file_path) => {
                 let path = file_path.file.clone();
-                let iq_format_str =
-                    self.iq_format.clone().unwrap_or_else(|| "cu8".to_string());
-
-                // Use sample_rate from config or default to 2.4 MS/s
-                let sample_rate = self.sample_rate.unwrap_or(RATE_2_4M);
-
+                let explicit_rate = self.sample_rate;
+                let explicit_format = self.iq_format.clone();
                 tokio::spawn(async move {
-                    use desperado::{IqAsyncSource, IqFormat};
-                    use std::str::FromStr;
-                    use std::time::UNIX_EPOCH;
-
-                    let iq_format = IqFormat::from_str(&iq_format_str)
-                        .unwrap_or_else(|_| {
-                            eprintln!(
-                                "Invalid IQ format '{}', defaulting to cu8",
-                                iq_format_str
-                            );
-                            IqFormat::Cu8
-                        });
-
-                    // Get file modification time to use as base timestamp
-                    let expanded_path =
-                        desperado::expanduser(path.clone().into());
-                    let file_metadata = std::fs::metadata(&expanded_path)
-                        .expect("Failed to get file metadata");
-                    let file_time = file_metadata
-                        .modified()
-                        .or_else(|_| file_metadata.created())
-                        .unwrap_or(UNIX_EPOCH);
-                    let base_timestamp = file_time
-                        .duration_since(UNIX_EPOCH)
-                        .expect("File time before UNIX epoch")
-                        .as_secs_f64();
-
-                    let chunk_size = 8136_u64;
-                    let source = IqAsyncSource::from_file(
-                        &path,
-                        MODES_FREQ as u32,
-                        sample_rate as u32,
-                        chunk_size as usize,
-                        iq_format,
-                    )
-                    .await
-                    .expect("Failed to open IQ file");
-
-                    tokio::select! {
-                        _ = iqread::file_receiver(
-                            tx,
-                            source,
-                            serial,
-                            sample_rate,
-                            base_timestamp,
-                            chunk_size,
-                            name,
-                        ) => {},
-                        _ = shutdown_rx.recv() => {
-                            // Silent shutdown
+                    let result = async {
+                        use std::time::UNIX_EPOCH;
+                        let expanded_path = desperado::expanduser(path.into());
+                        let parameters = iq_file_parameters(&expanded_path, explicit_rate, explicit_format.as_deref())?;
+                        let file_time = match parameters.capture_start {
+                            Some(start) => start,
+                            None => {
+                                warn!(source = source_label, "No complete UTC capture start in IQ filename; file modification/creation time is only an approximate replay origin");
+                                let metadata = std::fs::metadata(&expanded_path).map_err(|e| format!("Failed to get IQ file metadata: {e}"))?;
+                                metadata.modified().or_else(|_| metadata.created()).map_err(|e| format!("No usable IQ file timestamp: {e}"))?
+                            }
+                        };
+                        let base_timestamp = file_time.duration_since(UNIX_EPOCH).map_err(|e| format!("IQ capture start precedes UNIX epoch: {e}"))?.as_secs_f64();
+                        let chunk_size = 8136_u64;
+                        let source = IqAsyncSource::from_file(
+                            &expanded_path, MODES_FREQ as u32, parameters.sample_rate as u32,
+                            chunk_size as usize, parameters.format,
+                        ).await.map_err(|e| format!("Failed to open IQ file: {e}"))?;
+                        health::set_source_status(&health, &source_label, SourceStatus::Healthy);
+                        tokio::select! {
+                            _ = iqread::file_receiver(tx, source, serial, parameters.sample_rate, base_timestamp, chunk_size, name) => {},
+                            _ = shutdown_rx.recv() => {},
                         }
+                        Ok::<(), String>(())
+                    }.await;
+                    if let Err(error) = result {
+                        health::set_source_status(
+                            &health,
+                            &source_label,
+                            SourceStatus::Failed,
+                        );
+                        error!(source = source_label, %error, "IQ file source failed");
                     }
                 })
             }
@@ -1232,6 +1265,167 @@ impl From<&SeroParams> for sero::SeroClient {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[cfg(feature = "sdr")]
+    mod iq_files {
+        use super::*;
+        use desperado::IqFormat;
+        use std::path::Path;
+        use std::time::UNIX_EPOCH;
+
+        #[test]
+        fn gqrx_capture_metadata_including_compression_and_utc() {
+            for suffix in ["raw", "raw.zst", "raw.ZST", "raw.zSt"] {
+                let filename = format!(
+                    "gqrx_20260603_083011_1090000000_6000000_fc.{suffix}"
+                );
+                let p = iq_file_parameters(Path::new(&filename), None, None)
+                    .unwrap();
+                assert_eq!(p.sample_rate, RATE_6M);
+                assert_eq!(p.format, IqFormat::Cf32);
+                assert_eq!(
+                    p.capture_start
+                        .unwrap()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    1_780_475_411
+                );
+            }
+        }
+
+        #[test]
+        fn explicit_parameters_override_filename_rate_and_format() {
+            let p = iq_file_parameters(
+                Path::new("gqrx_20260603_083011_1090000000_8000000_fc.raw"),
+                Some(RATE_2_4M),
+                Some("S16_LE"),
+            )
+            .unwrap();
+            assert_eq!(p.sample_rate, RATE_2_4M);
+            assert_eq!(p.format, IqFormat::Cs16);
+            assert!(p.capture_start.is_some());
+        }
+
+        #[test]
+        fn rtl_names_do_not_invent_a_capture_time() {
+            for filename in [
+                "rtlsdr_1090000000_6000000_cs16.iq",
+                "rtlsdr_20260728_1090000000_6000000_cs16.iq.zst",
+            ] {
+                let p = iq_file_parameters(Path::new(filename), None, None)
+                    .unwrap();
+                assert_eq!(p.sample_rate, RATE_6M);
+                assert_eq!(p.format, IqFormat::Cs16);
+                assert!(p.capture_start.is_none());
+            }
+        }
+
+        #[test]
+        fn unknown_names_keep_legacy_defaults_and_accept_format_aliases() {
+            let p = iq_file_parameters(Path::new("unknown.iq"), None, None)
+                .unwrap();
+            assert_eq!(p.sample_rate, RATE_2_4M);
+            assert_eq!(p.format, IqFormat::Cu8);
+            assert!(p.capture_start.is_none());
+            for (value, expected) in [
+                ("U8", IqFormat::Cu8),
+                ("S16", IqFormat::Cs16),
+                ("s16_le", IqFormat::Cs16),
+                ("fc", IqFormat::Cf32),
+                ("CF32", IqFormat::Cf32),
+            ] {
+                assert_eq!(
+                    iq_file_parameters(
+                        Path::new("unknown.iq"),
+                        None,
+                        Some(value)
+                    )
+                    .unwrap()
+                    .format,
+                    expected
+                );
+            }
+        }
+
+        #[test]
+        fn invalid_parameters_and_wrong_center_are_rejected() {
+            for rate in [0.0, -1.0, f64::NAN, f64::INFINITY, 8e6] {
+                assert!(iq_file_parameters(
+                    Path::new("unknown.iq"),
+                    Some(rate),
+                    None
+                )
+                .is_err());
+            }
+            assert!(iq_file_parameters(
+                Path::new("unknown.iq"),
+                None,
+                Some("typo")
+            )
+            .is_err());
+            assert!(iq_file_parameters(
+                Path::new("rtlsdr_134000000_2400000_cu8.iq"),
+                None,
+                None
+            )
+            .unwrap_err()
+            .contains("center frequency"));
+            assert!(iq_file_parameters(
+                Path::new("gqrx_20260603_083011_1090000000_8000000_fc.raw"),
+                None,
+                None
+            )
+            .unwrap_err()
+            .contains("Unsupported IQ sample rate"));
+        }
+
+        #[test]
+        fn wav_containers_are_not_treated_as_raw_iq() {
+            for filename in [
+                "SDRuno_20200908_152020Z_1090000kHz.wav",
+                "capture.WAV",
+                "capture.wav.zst",
+                "capture.WAV.ZST",
+                "capture.wav.zSt",
+            ] {
+                assert!(iq_file_parameters(
+                    Path::new(filename),
+                    Some(RATE_2_4M),
+                    Some("cu8")
+                )
+                .unwrap_err()
+                .contains("WAV"));
+            }
+        }
+
+        #[tokio::test]
+        async fn invalid_iq_source_fails_cleanly_without_opening_hardware() {
+            let source: Source =
+                toml::from_str("file = '/nonexistent.iq'\niq_format = 'typo'")
+                    .unwrap();
+            let label = source.health_label();
+            let health = health::new_health();
+            health::register_source(&health, label.clone());
+            let (tx, _rx) = tokio::sync::mpsc::channel(1);
+            let (_shutdown, shutdown_rx) = tokio::sync::broadcast::channel(1);
+            source
+                .receiver(
+                    tx,
+                    source.serial(),
+                    None,
+                    shutdown_rx,
+                    health.clone(),
+                    Default::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                health.lock().unwrap().sources[&label],
+                SourceStatus::Failed
+            );
+        }
+    }
 
     #[test]
     fn sero_health_labels_are_recognizable_and_do_not_change_sensor_ids() {
