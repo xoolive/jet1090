@@ -229,7 +229,7 @@ Published automatically to <https://docs.rs/rs1090>
 - `docs/`: MkDocs markdown files (installation, configuration, usage guides)
 - `crates/rs1090/src/`: Inline Rust documentation (extracted by rustdoc)
 - `readme.md`: Main repository README with quickstart examples
-- `changelog.md`: Version history and release notes
+- `CHANGELOG.md`: Version history and release notes
 
 ## Code analysis
 
@@ -325,7 +325,7 @@ gh pr create --title "Title" --body "Description"
 gh pr create --title "Fix altitude bug" --body "Fixes #123"
 ```
 
-Update changelog.md after fixing issues
+Update CHANGELOG.md after fixing issues
 
 ## Task planning
 
