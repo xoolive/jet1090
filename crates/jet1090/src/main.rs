@@ -402,6 +402,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cli_options.stats {
         options.stats = cli_options.stats;
     }
+    if cli_options.no_deduplication {
+        options.no_deduplication = true;
+    }
     if cli_options.deduplication.is_some() {
         options.deduplication = cli_options.deduplication;
     }
@@ -761,6 +764,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         source_handles.push(handle);
     }
 
+    // Plain headless runs end when every producer closes. Interactive/web
+    // sessions intentionally stay available for inspection until explicitly quit.
+    let _session_input_guard =
+        (options.interactive || options.serve_port.is_some()).then_some(tx);
+
     // Conditionally spawn deduplication task
     if !options.no_deduplication {
         tokio::spawn(async move {
@@ -964,6 +972,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     output_result?;
     redis_result?;
+    health::input_result(&health)?;
     Ok(())
 }
 
@@ -1178,6 +1187,9 @@ impl Jet1090 {
 fn print_completions<G: Generator>(gen: G, cmd: &mut Command) {
     generate(gen, cmd, cmd.get_name().to_string(), &mut io::stdout());
 }
+
+#[cfg(all(test, unix, feature = "sdr"))]
+mod iq_file_tests;
 
 #[cfg(test)]
 mod tests {

@@ -77,28 +77,50 @@ pub async fn receiver(
 /// Actual buffer lengths advance the sample counter. `chunk_size` is retained
 /// for API compatibility but is not a reliable count for short buffers.
 /// This does not change the timestamp interpretation of live SDR input.
+/// Errors are logged for compatibility; callers needing an outcome should use
+/// [`try_file_receiver`].
 pub async fn file_receiver(
     tx: mpsc::Sender<TimedMessage>,
-    mut source: IqAsyncSource,
+    source: IqAsyncSource,
     serial: u64,
     rate: f64,
     base_timestamp: f64,
     _chunk_size: u64,
     name: Option<String>,
 ) {
+    if let Err(error) =
+        try_file_receiver(tx, source, serial, rate, base_timestamp, name).await
+    {
+        tracing::error!(%error, "IQ file replay failed; stopping rather than skipping samples");
+    }
+}
+
+/// Replay a finite IQ input, returning parameter/read errors to the caller.
+/// Normal EOF and a closed downstream channel are successful completion.
+/// Already sent messages remain valid if a subsequent read fails.
+/// Unlike [`file_receiver`], this does not log and discard read errors.
+pub async fn try_file_receiver(
+    tx: mpsc::Sender<TimedMessage>,
+    mut source: IqAsyncSource,
+    serial: u64,
+    rate: f64,
+    base_timestamp: f64,
+    name: Option<String>,
+) -> Result<(), desperado::Error> {
     if !matches!(rate, 2.4e6 | 6.0e6) || !base_timestamp.is_finite() {
-        tracing::error!(rate, base_timestamp, "Invalid IQ file replay clock");
-        return;
+        return Err(desperado::Error::other(format!(
+            "Invalid IQ file replay clock: rate={rate}, base_timestamp={base_timestamp}"
+        )));
     }
     let mut sample_count: u64 = 0;
-    while let Some(buf) = source.next().await {
-        let buf = match buf {
-            Ok(buf) => buf,
-            Err(error) => {
-                tracing::error!(%error, "IQ file read failed; stopping rather than skipping samples");
-                return;
-            }
+    loop {
+        let buf = tokio::select! {
+            biased;
+            _ = tx.closed() => return Ok(()),
+            buf = source.next() => buf,
         };
+        let Some(buf) = buf else { return Ok(()) };
+        let buf = buf?;
         let resulting_data = match rate {
             2.4e6 => demodulate2400(&magnitude_u16(&buf)),
             6.0e6 => demodulate6000(&convert_f32_to_i16_iq(&buf)),
@@ -114,7 +136,7 @@ pub async fn file_receiver(
                 name.clone(),
             );
             if tx.send(tmsg).await.is_err() {
-                return;
+                return Ok(());
             }
         }
         sample_count += buf.len() as u64;
@@ -235,6 +257,74 @@ mod tests {
             assert_eq!(msg.metadata[0].system_timestamp, msg.timestamp);
         }
         assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallible_replay_distinguishes_eof_errors_and_closed_output() {
+        for (index, (bytes, rate, base, closed, success)) in [
+            (&[][..], 6e6, 1000.0, false, true),
+            (&[0][..], 6e6, 1000.0, false, false),
+            (&[0][..], 6e6, 1000.0, true, true),
+            (&[][..], 1e6, 1000.0, false, false),
+            (&[][..], f64::NAN, 1000.0, false, false),
+            (&[][..], 6e6, f64::INFINITY, false, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = std::env::temp_dir().join(format!(
+                "rs1090-iq-outcome-{}-{index}-{}.cf32",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::write(&path, bytes).unwrap();
+            let source = IqAsyncSource::from_file(
+                &path,
+                1_090_000_000,
+                6_000_000,
+                2400,
+                desperado::IqFormat::Cf32,
+            )
+            .await
+            .unwrap();
+            let (tx, rx) = mpsc::channel(1);
+            let rx = (!closed).then_some(rx);
+            let result =
+                try_file_receiver(tx, source, 42, rate, base, None).await;
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(result.is_ok(), success, "case {index}: {result:?}");
+            drop(rx);
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_output_cancels_an_idle_replay_read() {
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let source = IqAsyncSource::from_tcp(
+            "127.0.0.1",
+            listener.local_addr().unwrap().port(),
+            1_090_000_000,
+            6_000_000,
+            2400,
+            desperado::IqFormat::Cf32,
+        )
+        .await
+        .unwrap();
+        let (_socket, _) = listener.accept().await.unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        let task =
+            tokio::spawn(try_file_receiver(tx, source, 42, 6e6, 1000.0, None));
+        tokio::task::yield_now().await;
+        drop(rx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

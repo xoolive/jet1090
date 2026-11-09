@@ -149,6 +149,14 @@ resampling or frequency translation is performed. WAV containers are rejected
 rather than read as raw samples. See [offline IQ configuration](config.md#iq-file-offline-decoding)
 for aliases, precedence and timestamp limitations.
 
+In plain headless mode (neither `--interactive` nor `--serve-port`), Jet1090
+exits when all input sources finish, after draining decoding/deduplication and
+finalizing file and Redis output. An IQ file's open, parameter or read failure
+sets its source status to failed and makes the eventual process exit nonzero;
+other inputs continue and already accepted messages are still drained. Normal
+EOF and downstream cancellation are not input failures. Interactive and web
+sessions remain available for inspection until explicitly stopped.
+
 ## Beast format
 
 ### TCP

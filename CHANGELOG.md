@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Finite IQ replay completion
+
+- Let plain headless runs reach EOF after all sources finish, drain decoding
+  and deduplication, and finalize outputs. Keep interactive/web sessions open
+  until explicitly stopped.
+- Report IQ file setup/read failures through source health and a nonzero exit,
+  independently of log filtering, without discarding already accepted messages
+  or stopping healthy concurrent inputs early. Treat EOF and cancellation as
+  successful completion.
+- Honor the CLI `--no-deduplication` flag instead of silently retaining the
+  default/configured deduplication mode.
+- Add `rs1090::source::iqread::try_file_receiver` for fallible replay while
+  retaining the existing `file_receiver` signature/logging behavior. Cancel
+  idle replay reads when downstream closes.
+
 ### DF11 JSON alignment with uplink1030
 
 - Emit `interrogator` as `"II0"`–`"II15"`, `"SI1"`–`"SI63"`, diagnostic

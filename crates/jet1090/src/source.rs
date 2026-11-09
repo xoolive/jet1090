@@ -1057,36 +1057,82 @@ impl Source {
                 let explicit_rate = self.sample_rate;
                 let explicit_format = self.iq_format.clone();
                 tokio::spawn(async move {
-                    let result = async {
+                    let replay = async {
                         use std::time::UNIX_EPOCH;
-                        let expanded_path = desperado::expanduser(path.into());
-                        let parameters = iq_file_parameters(&expanded_path, explicit_rate, explicit_format.as_deref())?;
+                        let expanded_path =
+                            desperado::expanduser(path.as_str().into());
+                        let parameters = iq_file_parameters(
+                            &expanded_path,
+                            explicit_rate,
+                            explicit_format.as_deref(),
+                        )?;
                         let file_time = match parameters.capture_start {
                             Some(start) => start,
                             None => {
                                 warn!(source = source_label, "No complete UTC capture start in IQ filename; file modification/creation time is only an approximate replay origin");
-                                let metadata = std::fs::metadata(&expanded_path).map_err(|e| format!("Failed to get IQ file metadata: {e}"))?;
-                                metadata.modified().or_else(|_| metadata.created()).map_err(|e| format!("No usable IQ file timestamp: {e}"))?
+                                let metadata = std::fs::metadata(
+                                    &expanded_path,
+                                )
+                                .map_err(|e| {
+                                    format!(
+                                        "Failed to get IQ file metadata: {e}"
+                                    )
+                                })?;
+                                metadata
+                                    .modified()
+                                    .or_else(|_| metadata.created())
+                                    .map_err(|e| {
+                                        format!(
+                                            "No usable IQ file timestamp: {e}"
+                                        )
+                                    })?
                             }
                         };
-                        let base_timestamp = file_time.duration_since(UNIX_EPOCH).map_err(|e| format!("IQ capture start precedes UNIX epoch: {e}"))?.as_secs_f64();
+                        let base_timestamp = file_time
+                            .duration_since(UNIX_EPOCH)
+                            .map_err(|e| {
+                                format!(
+                                    "IQ capture start precedes UNIX epoch: {e}"
+                                )
+                            })?
+                            .as_secs_f64();
                         let chunk_size = 8136_u64;
                         let source = IqAsyncSource::from_file(
-                            &expanded_path, MODES_FREQ as u32, parameters.sample_rate as u32,
-                            chunk_size as usize, parameters.format,
-                        ).await.map_err(|e| format!("Failed to open IQ file: {e}"))?;
-                        health::set_source_status(&health, &source_label, SourceStatus::Healthy);
-                        tokio::select! {
-                            _ = iqread::file_receiver(tx, source, serial, parameters.sample_rate, base_timestamp, chunk_size, name) => {},
-                            _ = shutdown_rx.recv() => {},
-                        }
-                        Ok::<(), String>(())
-                    }.await;
-                    if let Err(error) = result {
+                            &expanded_path,
+                            MODES_FREQ as u32,
+                            parameters.sample_rate as u32,
+                            chunk_size as usize,
+                            parameters.format,
+                        )
+                        .await
+                        .map_err(|e| format!("Failed to open IQ file: {e}"))?;
                         health::set_source_status(
                             &health,
                             &source_label,
-                            SourceStatus::Failed,
+                            SourceStatus::Healthy,
+                        );
+                        iqread::try_file_receiver(
+                            tx,
+                            source,
+                            serial,
+                            parameters.sample_rate,
+                            base_timestamp,
+                            name,
+                        )
+                        .await
+                        .map_err(|e| format!("IQ file read failed: {e}"))
+                    };
+                    let result = tokio::select! {
+                        biased;
+                        _ = shutdown_rx.recv() => Ok(()),
+                        result = replay => result,
+                    };
+                    if let Err(error) = result {
+                        let error = format!("{path:?}: {error}");
+                        health::fail_input(
+                            &health,
+                            &source_label,
+                            error.clone(),
                         );
                         error!(source = source_label, %error, "IQ file source failed");
                     }

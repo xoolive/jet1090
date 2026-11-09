@@ -98,6 +98,11 @@ cargo test -p rs1090 --all-features
 # Run specific test
 cargo test test_name -- --nocapture
 
+# Real finite-IQ CLI regressions (Unix; isolated cache/config, no radio/Redis).
+# These tests are ignored by the generic command and run separately in Rust CI.
+cargo build --locked --release --all-features -p jet1090
+JET1090_TEST_BINARY="$PWD/target/release/jet1090" cargo test --locked -p jet1090 --all-features cli_iq_ -- --ignored
+
 # Run with Nix
 nix run .#checks.test-check  # Uses cargo-nextest
 ```

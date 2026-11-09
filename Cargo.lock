@@ -2508,6 +2508,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rs1090",
+ "rusqlite",
  "serde",
  "serde_json",
  "soapysdr",
@@ -2517,6 +2518,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zip",
+ "zstd 0.14.0",
 ]
 
 [[package]]

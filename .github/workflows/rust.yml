@@ -35,6 +35,11 @@ jobs:
       - name: Run tests, examples and benchmarks
         run: cargo test --workspace --all-features --all-targets
 
+      - name: Test finite IQ CLI with isolated fixtures
+        env:
+          JET1090_TEST_BINARY: ${{ github.workspace }}/target/release/jet1090
+        run: cargo test --locked -p jet1090 --all-features cli_iq_ -- --ignored
+
       - name: Check docs
         env:
           RUSTDOCFLAGS: "-D rustdoc::all -A rustdoc::private-doc-tests"
