@@ -149,6 +149,12 @@ resampling or frequency translation is performed. WAV containers are rejected
 rather than read as raw samples. See [offline IQ configuration](config.md#iq-file-offline-decoding)
 for aliases, precedence and timestamp limitations.
 
+Offline replay retains the unscanned lookahead and DSP state across buffers.
+Frame times use absolute capture-sample indices, including frames that straddle
+a buffer boundary. EOF/read failure processes complete candidates from the
+received prefix without inventing padding for incomplete frames. This does not
+change live SDR timestamp-origin interpretation or promise exhaustive RF recall.
+
 In plain headless mode (neither `--interactive` nor `--serve-port`), Jet1090
 exits when all input sources finish, after draining decoding/deduplication and
 finalizing file and Redis output. An IQ file's open, parameter or read failure

@@ -103,6 +103,10 @@ cargo test test_name -- --nocapture
 cargo build --locked --release --all-features -p jet1090
 JET1090_TEST_BINARY="$PWD/target/release/jet1090" cargo test --locked -p jet1090 --all-features cli_iq_ -- --ignored
 
+# Optional real-IQ evidence regressions (private recordings, never downloaded).
+# Fixture identities/provenance must match the documented anchor recordings.
+RS1090_IQ_FIXTURES=/path/to/decode_adsb cargo test --locked -p rs1090 --all-features private_ -- --ignored --test-threads=1
+
 # Run with Nix
 nix run .#checks.test-check  # Uses cargo-nextest
 ```
