@@ -18,7 +18,7 @@ futures-util = "0.3.32"
 glob = "0.3"
 hex = "0.4.3"
 rayon = "1.12"
-rs1090 = { version = "0.8.0", path = "../rs1090" }
+rs1090 = { version = "0.8.1", path = "../rs1090" }
 same-file = "1.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["float_roundtrip"] }
