@@ -222,12 +222,15 @@ async fn private_recordings_preserve_independently_verified_anchors() {
         std::env::var_os("RS1090_IQ_FIXTURES")
             .expect("set RS1090_IQ_FIXTURES; recordings are never downloaded"),
     );
+    // Receiver-prefixed UTC names were normalized from preserved filesystem
+    // timestamps; the times are not GPS ground truth. Rate/format stay explicit
+    // here: support for parsing these names belongs upstream in Desperado.
     type Case<'a> = (&'a str, IqFormat, u32, usize, &'a [(u64, &'a str)]);
     let cases: &[Case<'_>] = &[
         // The two default-chunk losses are also present in correction-disabled
         // readsb output. Positions are rs1090's measured detector indices.
         (
-            "adsb.iq",
+            "rtlsdr_20251105_071950_1090000000_2400000_cu8.raw",
             IqFormat::Cu8,
             2_400_000,
             17_432_576,
@@ -250,7 +253,7 @@ async fn private_recordings_preserve_independently_verified_anchors() {
             ],
         ),
         (
-            "airspy_adsb_t2v8l8m0_6Ms.raw",
+            "airspy_20260127_141241_1090000000_6000000_cs16_v8_l8_m0.raw",
             IqFormat::Cs16,
             6_000_000,
             6_000_000,
@@ -262,7 +265,7 @@ async fn private_recordings_preserve_independently_verified_anchors() {
         // No independently verified frame in this prefix: control only, not
         // evidence of format correctness or an exhaustive no-signal verdict.
         (
-            "airspy_6Ms_int16.raw",
+            "airspy_20260112_230839_1090000000_6000000_cs16.raw",
             IqFormat::Cs16,
             6_000_000,
             6_000_000,
