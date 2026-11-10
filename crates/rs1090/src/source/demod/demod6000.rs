@@ -114,7 +114,7 @@ struct PreambleDetector {
     /// Running noise floor estimate
     noise_floor: u64,
     /// Sample count for noise floor update
-    sample_count: usize,
+    sample_count: u64,
 }
 
 impl PreambleDetector {
@@ -259,33 +259,106 @@ impl BitDecoder {
 /// # Returns
 /// Vector of successfully decoded Mode S messages with CRC validation
 pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
-    let mut results = Vec::new();
-
-    // Convert IQ to energy stream
     let mut processor = MagnitudeProcessor::new();
-    let mut energy_buffer = Vec::with_capacity(iq_samples.len() / 2);
+    let energy_buffer: Vec<_> = iq_samples
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| processor.process_sample(pair[0], pair[1]))
+        .collect();
+    scan_energy(&energy_buffer, &mut PreambleDetector::new(), &mut 0, true)
+}
 
-    // Process IQ pairs → energy
-    for chunk in iq_samples.as_chunks::<2>().0 {
-        let i = chunk[0];
-        let q = chunk[1];
-        let energy = processor.process_sample(i, q);
-        energy_buffer.push(energy);
+/// Continuous filtering/detection with bounded undecided lookahead. Each raw
+/// sample and candidate position is processed once; thresholds and validation
+/// are the same as the one-shot decoder.
+pub(crate) struct Demodulator6000 {
+    processor: MagnitudeProcessor,
+    detector: PreambleDetector,
+    energy: Vec<u64>,
+    cursor: usize,
+    sample_offset: u64,
+}
+
+impl Default for Demodulator6000 {
+    fn default() -> Self {
+        Self {
+            processor: MagnitudeProcessor::new(),
+            detector: PreambleDetector::new(),
+            energy: Vec::new(),
+            cursor: 0,
+            sample_offset: 0,
+        }
+    }
+}
+
+impl Demodulator6000 {
+    pub(crate) fn push(&mut self, iq: &[[i16; 2]]) -> Vec<(u64, ModeSMessage)> {
+        self.energy.extend(
+            iq.iter()
+                .map(|pair| self.processor.process_sample(pair[0], pair[1])),
+        );
+        self.scan(false)
     }
 
-    // Search for preambles and decode messages
-    let mut detector = PreambleDetector::new();
-    let mut pos = 0;
+    pub(crate) fn finish(&mut self) -> Vec<(u64, ModeSMessage)> {
+        // Only actually received samples: short frames in the final tail can
+        // still validate, while incomplete payloads fail normal bounds checks.
+        self.scan(true)
+    }
 
+    fn scan(&mut self, final_input: bool) -> Vec<(u64, ModeSMessage)> {
+        let messages = scan_energy(
+            &self.energy,
+            &mut self.detector,
+            &mut self.cursor,
+            final_input,
+        )
+        .into_iter()
+        .map(|message| {
+            (self.sample_offset + message.sample_position as u64, message)
+        })
+        .collect();
+        let consumed = self.cursor;
+        self.energy.drain(..consumed);
+        self.sample_offset += consumed as u64;
+        self.cursor -= consumed;
+        debug_assert!(
+            self.energy.len()
+                < PREAMBLE_LENGTH_SAMPLES
+                    + MODES_LONG_MSG_BITS * SAMPLES_PER_BIT
+        );
+        messages
+    }
+}
+
+fn scan_energy(
+    energy_buffer: &[u64],
+    detector: &mut PreambleDetector,
+    cursor: &mut usize,
+    final_input: bool,
+) -> Vec<ModeSMessage> {
+    let mut results = Vec::new();
+    let mut pos = *cursor;
     while pos < energy_buffer.len() {
-        if let Some(_correlation_score) = detector.detect(&energy_buffer, pos) {
+        // Defer the entire decision, including noise-floor updates and short
+        // validation, until both existing short/long alternatives are available.
+        // EOF uses the original scanner's actual-sample bounds instead.
+        if !final_input
+            && energy_buffer.len() - pos
+                < PREAMBLE_LENGTH_SAMPLES
+                    + MODES_LONG_MSG_BITS * SAMPLES_PER_BIT
+        {
+            break;
+        }
+        if let Some(_correlation_score) = detector.detect(energy_buffer, pos) {
             // Found preamble! Try to decode message
             let msg_start = pos + PREAMBLE_LENGTH_SAMPLES;
 
             // Try short message (56 bits = 7 bytes)
             if let Some((msg, signal_power, _weak_bits)) =
                 BitDecoder::decode_message(
-                    &energy_buffer,
+                    energy_buffer,
                     msg_start,
                     MODES_SHORT_MSG_BITS,
                 )
@@ -325,7 +398,7 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
             // Try long message (112 bits = 14 bytes)
             if let Some((msg, signal_power, _weak_bits)) =
                 BitDecoder::decode_message(
-                    &energy_buffer,
+                    energy_buffer,
                     msg_start,
                     MODES_LONG_MSG_BITS,
                 )
@@ -362,12 +435,28 @@ pub fn demodulate6000(iq_samples: &[i16]) -> Vec<ModeSMessage> {
                 }
             }
 
-            // Preamble detected but no valid message, skip ahead a bit
-            pos += SAMPLES_PER_BIT;
+            // A failed cue may precede a genuine preamble by only one sample.
+            // Try the adjacent phase rather than skipping an entire bit; the
+            // same detector thresholds and CRC/DF checks still apply.
+            pos += 1;
         } else {
             pos += 1;
         }
     }
 
+    *cursor = pos;
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn noise_counter_does_not_wrap_after_32_bit_sample_counts() {
+        let mut detector = PreambleDetector::new();
+        detector.sample_count = u32::MAX as u64;
+        assert!(detector.detect(&[0; PREAMBLE_LENGTH_SAMPLES], 0).is_none());
+        assert_eq!(detector.sample_count, u32::MAX as u64 + 1);
+    }
 }

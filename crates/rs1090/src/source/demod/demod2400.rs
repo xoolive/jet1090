@@ -5,6 +5,39 @@ use super::{validate_modes_message, ModeSMessage, MODES_LONG_MSG_BYTES};
 // which accounts for all phase variations and safety margin
 const MIN_TRAILING_SAMPLES: usize = 326;
 
+/// Incremental magnitude demodulation. Retain exactly the unscanned lookahead;
+/// every candidate position is visited once, regardless of input chunk sizes.
+#[derive(Default)]
+pub(crate) struct Demodulator2400 {
+    samples: Vec<u16>,
+    sample_offset: u64,
+}
+
+impl Demodulator2400 {
+    pub(crate) fn push(&mut self, samples: &[u16]) -> Vec<(u64, ModeSMessage)> {
+        self.samples.extend_from_slice(samples);
+        let messages = demodulate2400(&self.samples)
+            .into_iter()
+            .map(|message| {
+                (self.sample_offset + message.sample_position as u64, message)
+            })
+            .collect();
+        let scanned = self.samples.len().saturating_sub(MIN_TRAILING_SAMPLES);
+        self.samples.drain(..scanned);
+        debug_assert!(self.samples.len() <= MIN_TRAILING_SAMPLES);
+        self.sample_offset += scanned as u64;
+        messages
+    }
+
+    pub(crate) fn finish(&mut self) -> Vec<(u64, ModeSMessage)> {
+        // The remaining positions lack the existing decoder's real lookahead.
+        // Do not invent zero samples to force a decode at EOF.
+        self.sample_offset += self.samples.len() as u64;
+        self.samples.clear();
+        Vec::new()
+    }
+}
+
 pub fn demodulate2400(samples: &[u16]) -> Vec<ModeSMessage> {
     let mut results = vec![];
 

@@ -6,6 +6,9 @@ use tracing::error;
 pub mod demod2400;
 pub mod demod6000;
 
+#[cfg(test)]
+mod stream_tests;
+
 /// Mode S message with metadata
 #[derive(Clone, Debug)]
 pub struct ModeSMessage {

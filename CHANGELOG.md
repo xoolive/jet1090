@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### IQ replay chunk continuity
+
+- Keep the 2.4 MS/s unscanned lookahead and the 6 MS/s filter, detector and
+  scan state across file buffers. Derive replay timestamps from absolute
+  64-bit sample indices instead of buffer-local positions.
+- Scan adjacent sample phases after a failed 6 MS/s candidate rather than
+  skipping a full bit and potentially missing the real preamble. Detector
+  thresholds, CRC/DF validation and successful-frame skips are unchanged.
+  This search correction applies to one-shot/live demodulation too; live
+  timestamp-origin interpretation is not changed.
+- Flush only complete candidates supported by received samples at EOF/read
+  failure, without padding; preserve public replay and one-shot signatures.
+- Add chunk/phase/tail/counter regressions and opt-in private-recording
+  validation with independently corroborated real-frame anchors. No raw
+  recordings are bundled or downloaded.
+
 ### Finite IQ replay completion
 
 - Let plain headless runs reach EOF after all sources finish, drain decoding
