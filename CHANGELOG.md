@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## [0.8.1] - 2026-11-10
+
+### Release scope
+
+- This patch includes the DF11 JSON schema adjustment described below, finite
+  IQ replay completion/error reporting and offline demodulator continuity.
+- Desperado remains locked to 0.5.2. Automatic inference of timestamped
+  receiver-prefixed RTL-SDR/Airspy names from upstream Desperado #70 is not
+  included; it requires a later Desperado release and dependency update.
+- Live IQ timestamp-origin interpretation and adoption of continuous live
+  demodulator state remain separate work. No GPS timing correction is claimed.
 
 ### IQ replay chunk continuity
 
